@@ -71,7 +71,6 @@
 #ifdef HAVE_POLL_H
 #include <poll.h>
 #endif
-
 #include "access.h"
 #include "ansi.h"
 #include "attrib.h"
@@ -143,7 +142,7 @@ int que_next(void);             /* from cque.c */
 dbref email_register_player(DESC *d, const char *name, const char *email, const char *host, const char *ip);    /* from player.c */
 
 int shutdown_flag = 0;          /**< Is it time to shut down? */
-void chat_player_announce(dbref player, char *msg, int ungag);
+void chat_player_announce(DESC *desc_player, char *msg, int ungag);
 void report_mssp(DESC *d, char *buff, char **bp);
 
 static int login_number = 0;
@@ -299,7 +298,7 @@ SSL *ssl_master_socket = NULL;  /**< Master SSL socket for ssl port */
 static const char ssl_shutdown_message[] __attribute__ ((__unused__)) =
   "GAME: SSL connections must be dropped, sorry.";
 #ifdef LOCAL_SOCKET
-static int localsock = 0;
+static int localsock = -1;
 #endif
 static int ndescriptors = 0;
 #ifdef WIN32
@@ -703,7 +702,7 @@ main(int argc, char **argv)
   kill_ssl_slave();
 #endif
 #ifdef LOCAL_SOCKET
-  if (localsock) {
+  if (localsock >= 0) {
     closesocket(localsock);
     unlink(options.socket_file);
   }
@@ -1130,7 +1129,7 @@ shovechars(Port_t port, Port_t sslport)
     if (sslsock)
       FD_SET(sslsock, &input_set);
 #ifdef LOCAL_SOCKET
-    if (localsock)
+    if (localsock >= 0)
       FD_SET(localsock, &input_set);
 #endif
 #ifdef INFO_SLAVE
@@ -1197,7 +1196,7 @@ shovechars(Port_t port, Port_t sslport)
       if (sslsock && FD_ISSET(sslsock, &input_set))
         got_new_connection(sslsock, CS_OPENSSL_SOCKET);
 #ifdef LOCAL_SOCKET
-      if (localsock && FD_ISSET(localsock, &input_set))
+      if (localsock >= 0 && FD_ISSET(localsock, &input_set))
         setup_desc(localsock, CS_LOCAL_SOCKET);
 #endif                          /* LOCAL_SOCKET */
 #else                           /* INFO_SLAVE */
@@ -1206,7 +1205,7 @@ shovechars(Port_t port, Port_t sslport)
       if (sslsock && FD_ISSET(sslsock, &input_set))
         setup_desc(sslsock, CS_OPENSSL_SOCKET);
 #ifdef LOCAL_SOCKET
-      if (localsock && FD_ISSET(localsock, &input_set))
+      if (localsock >= 0 && FD_ISSET(localsock, &input_set))
         setup_desc(localsock, CS_LOCAL_SOCKET);
 #endif                          /* LOCAL_SOCKET */
 #endif                          /* INFO_SLAVE */
@@ -2319,7 +2318,7 @@ TELNET_HANDLER(telnet_charset)
    * in a charset name */
 #ifdef HAVE_NL_LANGINFO
   static const char *delim_list = "; +=/!", *delim_curr;
-#endif /* HAVE_NL_LANGINFO */
+#endif                          /* HAVE_NL_LANGINFO */
   char delim[2] = { ';', '\0' };
   char *curr_locale = NULL;
 
@@ -2341,7 +2340,7 @@ TELNET_HANDLER(telnet_charset)
       delim[0] = ';';           /* fall back on ; */
     }
   }
-#endif                           /* HAVE_NL_LANGINFO */
+#endif                          /* HAVE_NL_LANGINFO */
   queue_newwrite(d, delim, 1);
   if (curr_locale && strlen(curr_locale)) {
     queue_newwrite(d, curr_locale, strlen(curr_locale));
@@ -2945,7 +2944,7 @@ string_to_json_real(char *input, char **ip, int recurse)
       }
       i++;
     }
-    if ((i % 2) && **ip == '}') {
+    if ((i == 0 || (i % 2)) && **ip == '}') {
       (*ip)++;
       result->type = JSON_OBJECT;
     }
@@ -3035,6 +3034,11 @@ FUNCTION(fun_oob)
     return;
   }
 
+  if (Owner(who) != Owner(executor) && !Can_Send_OOB(executor)) {
+    safe_str("#-1", buff, bp);
+    return;
+  }
+
   json = string_to_json(args[2]);
   if (!json) {
     safe_str(T("#-1 INVALID JSON"), buff, bp);
@@ -3048,6 +3052,166 @@ FUNCTION(fun_oob)
     i++;
   }
   safe_integer(i, buff, bp);
+  json_free(json);
+}
+
+enum json_query { JSON_QUERY_TYPE, JSON_QUERY_SIZE, JSON_QUERY_EXISTS,
+    JSON_QUERY_GET, JSON_QUERY_UNESCAPE };
+
+FUNCTION(fun_json_query)
+{
+  JSON *json, *next;
+  enum json_query query_type = JSON_QUERY_TYPE;
+  int i;
+
+  if (nargs > 1 && args[1] && *args[1]) {
+    if (string_prefix("size", args[1])) {
+      query_type = JSON_QUERY_SIZE;
+    } else if (string_prefix("exists", args[1])) {
+      query_type = JSON_QUERY_EXISTS;
+    } else if (string_prefix("get", args[1])) {
+      query_type = JSON_QUERY_GET;
+    } else if (string_prefix("unescape", args[1])) {
+      query_type = JSON_QUERY_UNESCAPE;
+    } else {
+      safe_str(T("#-1 INVALID OPERATION"), buff, bp);
+      return;
+    }
+  }
+
+  if ((query_type == JSON_QUERY_GET || query_type == JSON_QUERY_EXISTS)
+      && (nargs < 3 || !args[2] || !*args[2])) {
+    safe_str(T("#-1 MISSING VALUE"), buff, bp);
+    return;
+  }
+
+  json = string_to_json(args[0]);
+  if (!json) {
+    safe_str(T("#-1 INVALID JSON"), buff, bp);
+    return;
+  }
+
+  switch (query_type) {
+  case JSON_QUERY_TYPE:
+    switch (json->type) {
+    case JSON_NONE:
+      break;                    /* Should never happen */
+    case JSON_STR:
+      safe_str("string", buff, bp);
+      break;
+    case JSON_BOOL:
+      safe_str("boolean", buff, bp);
+      break;
+    case JSON_NULL:
+      safe_str("null", buff, bp);
+      break;
+    case JSON_NUMBER:
+      safe_str("number", buff, bp);
+      break;
+    case JSON_ARRAY:
+      safe_str("array", buff, bp);
+      break;
+    case JSON_OBJECT:
+      safe_str("object", buff, bp);
+      break;
+    }
+    break;
+  case JSON_QUERY_SIZE:
+    switch (json->type) {
+    case JSON_NONE:
+      break;
+    case JSON_STR:
+    case JSON_BOOL:
+    case JSON_NUMBER:
+      safe_chr('1', buff, bp);
+      break;
+    case JSON_NULL:
+      safe_chr('0', buff, bp);
+      break;
+    case JSON_ARRAY:
+    case JSON_OBJECT:
+      next = (JSON *) json->data;
+      if (!next) {
+        safe_chr('0', buff, bp);
+        break;
+      }
+      for (i = 1; next->next; i++, next = next->next) ;
+      if (json->type == JSON_OBJECT) {
+        i = i / 2;              /* Key/value pairs, so we have half as many */
+      }
+      safe_integer(i, buff, bp);
+      break;
+    }
+    break;
+  case JSON_QUERY_UNESCAPE:
+    if (json->type != JSON_STR) {
+      safe_str("#-1", buff, bp);
+      break;
+    }
+    safe_str(json_unescape_string((char *) json->data), buff, bp);
+    break;
+  case JSON_QUERY_EXISTS:
+  case JSON_QUERY_GET:
+    switch (json->type) {
+    case JSON_NONE:
+      break;
+    case JSON_STR:
+    case JSON_BOOL:
+    case JSON_NUMBER:
+    case JSON_NULL:
+      safe_str("#-1", buff, bp);
+      break;
+    case JSON_ARRAY:
+      if (!is_strict_integer(args[2])) {
+        safe_str(T(e_int), buff, bp);
+        break;
+      }
+      i = parse_integer(args[2]);
+      for (next = json->data; i > 0 && next; next = next->next, i--) ;
+
+      if (query_type == JSON_QUERY_EXISTS) {
+        safe_chr((next) ? '1' : '0', buff, bp);
+      } else if (next) {
+        char *s = json_to_string(next, 0);
+        if (s) {
+          safe_str(s, buff, bp);
+          mush_free(s, "json_str");
+        }
+      }
+      break;
+    case JSON_OBJECT:
+      next = (JSON *) json->data;
+      while (next) {
+        if (next->type != JSON_STR) {
+          /* We should have a string label */
+          next = NULL;
+          break;
+        }
+        if (!strcasecmp((char *) next->data, args[2])) {
+          /* Success! */
+          next = next->next;
+          break;
+        } else {
+          /* Skip */
+          next = next->next;    /* Move to this entry's value */
+          if (next) {
+            next = next->next;  /* Move to next entry's name */
+          }
+        }
+      }
+      if (query_type == JSON_QUERY_EXISTS) {
+        safe_chr((next) ? '1' : '0', buff, bp);
+      } else if (next) {
+        char *s = json_to_string(next, 0);
+        if (s) {
+          safe_str(s, buff, bp);
+          mush_free(s, "json_str");
+        }
+      }
+      break;
+    }
+    break;
+  }
   json_free(json);
 }
 
@@ -5378,9 +5542,7 @@ announce_connect(DESC *d, int isnew, int num)
   }
 
   /* Redundant, but better for translators */
-  if (Dark(player)) {
-    message = (num > 1) ? T("has DARK-reconnected.") : T("has DARK-connected.");
-  } else if (Hidden(d)) {
+  if (Hidden(d)) {
     message = (num > 1) ? T("has HIDDEN-reconnected.") :
       T("has HIDDEN-connected.");
   } else {
@@ -5400,7 +5562,7 @@ announce_connect(DESC *d, int isnew, int num)
     flag_broadcast(0, "HEAR_CONNECT", "%s %s", T("GAME:"), tbuf1);
 
   if (ANNOUNCE_CONNECTS)
-    chat_player_announce(player, message, 0);
+    chat_player_announce(d, message, 0);
 
   loc = Location(player);
   if (!GoodObject(loc)) {
@@ -5583,10 +5745,7 @@ announce_disconnect(DESC *saved, const char *reason, bool reboot,
   pe_regs_free(pe_regs);
 
   /* Redundant, but better for translators */
-  if (Dark(player)) {
-    message = (num > 1) ? T("has partially DARK-disconnected.") :
-      T("has DARK-disconnected.");
-  } else if (hidden(player)) {
+  if (Hidden(saved)) {
     message = (num > 1) ? T("has partially HIDDEN-disconnected.") :
       T("has HIDDEN-disconnected.");
   } else {
@@ -5602,7 +5761,7 @@ announce_disconnect(DESC *saved, const char *reason, bool reboot,
     /* notify contents */
     notify_except(player, player, player, tbuf1, 0);
     /* notify channels */
-    chat_player_announce(player, message, num == 1);
+    chat_player_announce(saved, message, num == 1);
   }
 
   /* Monitor broadcasts */

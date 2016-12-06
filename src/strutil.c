@@ -854,7 +854,7 @@ safe_fill(char x, size_t n, char *buff, char **bp)
 {
   int ret = 0;
 
-  if (n == 0)
+  if (n < 1)
     return 0;
   else if (n == 1)
     return safe_chr(x, buff, bp);
@@ -1155,7 +1155,7 @@ next_token(char *str, char sep)
 
 /** Split out the next token from a string, destructively modifying it.
  * As usually, if the separator is a space, we skip multiple spaces.
- * The string's address is update to be past the token, and the token
+ * The string's address is updated to be past the token, and the token
  * is returned. This code from TinyMUSH 2.0.
  * \param sp pointer to string to split from.
  * \param sep token separator.
