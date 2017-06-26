@@ -340,6 +340,7 @@ FUNCTION(fun_elements)
    * A separator for the first list is allowed.
    */
   int nwords, cur;
+  int count = 0;
   char **ptrs;
   char *wordlist;
   char *s, *r, sep;
@@ -369,16 +370,14 @@ FUNCTION(fun_elements)
   /* Go through the second list, grabbing the numbers and finding the
    * corresponding elements.
    */
-  r = split_token(&s, ' ');
-  cur = find_list_position(r, nwords, 0) - 1;
-  if ((cur >= 0) && (cur < nwords) && ptrs[cur]) {
-    safe_str(ptrs[cur], buff, bp);
-  }
+
   while (s) {
     r = split_token(&s, ' ');
     cur = find_list_position(r, nwords, 0) - 1;
     if ((cur >= 0) && (cur < nwords) && ptrs[cur]) {
-      safe_str(osep, buff, bp);
+      if (count)
+        safe_str(osep, buff, bp);
+      count++;
       safe_str(ptrs[cur], buff, bp);
     }
   }
@@ -1128,7 +1127,10 @@ FUNCTION(fun_first)
     as = parse_ansi_string(args[0]);
     p = trim_space_sep(as->text, sep);
     q = split_token(&p, sep);
-    safe_ansi_string(as, q - as->text, p - q - 1, buff, bp);
+    if (p)
+      safe_ansi_string(as, q - as->text, p - q - 1, buff, bp);
+    else
+      safe_ansi_string(as, q - as->text, as->len, buff, bp);
     free_ansi_string(as);
   } else {
     p = trim_space_sep(args[0], sep);
@@ -1257,6 +1259,8 @@ FUNCTION(fun_rest)
     p = as->text;
   }
   (void) split_token(&p, sep);
+  if (!p || !*p)
+    return;
   if (as) {
     safe_ansi_string(as, p - as->text, as->len, buff, bp);
     free_ansi_string(as);
@@ -1324,7 +1328,7 @@ FUNCTION(fun_grab)
 
   do {
     r = split_token(&s, sep);
-    if (quick_wild(args[1], r)) {
+    if (r && quick_wild(args[1], r)) {
       if (as) {
         safe_ansi_string(as, r - as->text, s - r - 1, buff, bp);
         free_ansi_string(as);
@@ -3066,7 +3070,7 @@ FUNCTION(fun_regrab)
   if (strstr(called_as, "MATCH"))
     pos = 1;
 
-  if ((re = pcre_compile(args[1], flags, &errptr, &erroffset, tables)) == NULL) {
+  if ((re = pcre_compile(remove_markup(args[1], NULL), flags, &errptr, &erroffset, tables)) == NULL) {
     /* Matching error. */
     safe_str(T("#-1 REGEXP ERROR: "), buff, bp);
     safe_str(errptr, buff, bp);

@@ -97,7 +97,7 @@ See also: no_pay
 & CHOWN_OK
   Flag:  CHOWN_OK  (things, rooms, exits)
 
-  You can set this flag on an object you own to allow other players to transfer ownership of the object to themselves (using @chown). 
+  You can set this flag on an object you own to allow other players to transfer ownership of the object to themselves (using @chown), as long as they pass the object's @lock/chown.
   
 See also: @chown
 & CLOUDY
@@ -323,6 +323,8 @@ See also: MONIKERS, @moniker, moniker()
 
   If using the LISTEN Attribute Tree, you must set the Root Attribute !NO_COMMAND. By default this Attribute/Attribute Root has been set NO_COMMAND by the system. Attributes which are set NO_COMMAND will not be checked for ^-listen patterns.
   
+  In order to trigger an object's ^-listen patterns, you must pass both its @lock/use and its @lock/listen.
+
   This flag used to allow players to hear when someone connected to the game, but that is now controlled by the HEAR_CONNECT flag.  
   
 See also: LISTENING, @listen, LISTEN_PARENT, HEAR_CONNECT
@@ -341,7 +343,7 @@ See also: DBREF, TERSE
   
   This flag can be used when you with a single player to retain ownership of objects that other players will control or run arbitrary code on, and don't want those objects to be able ot affect your other objects.
   
-  Note that if a MISTRUST object is set WIZARD is will still control all objects in the database, and that MISTRUST does not prevent no_pay or other powers from being applies to the object directly.
+  Note that if a MISTRUST object is set WIZARD it will still control all objects in the database, and that MISTRUST does not prevent no_pay or other powers from being applied to the object directly.
 
 See also: control, TRUST
 & NOACCENTS

@@ -837,9 +837,9 @@ See also: ansi(), valid(), colorstyle
     
     > think colors(iuB+red, hex styles)
     ui#ff0000/#0000ee
-	
-	> think colors(+blue huyG/+black, auto)
-	hy/+black
+
+    > think colors(+blue huyG/+black, auto)
+    hy/+black
 
 & COMP()
   comp(<value1>, <value2>[, <type>])
@@ -1114,7 +1114,7 @@ See also: @dig, open(), @open, create(), pcreate()
 
   Typically at least the following algorithms are supported:
 
-  md4 md5 ripemd160 sha sha1 sha224 sha256 sha384 sha512 whirlpool
+  md4 md5 ripemd160 sha1 sha224 sha256 sha384 sha512 whirlpool
 
   Depending on the host's OpenSSL version and how it was configured, there might be more (or less) available. digest(list) returns the methods a particular server understands if the OpenSSL library version being used is recent enough (1.0.0 and higher), or '#-1 LISTING NOT SUPPORTED' on older versions. For portable code, stick with MD5 and the SHA family.
 
@@ -1203,7 +1203,7 @@ See also: get(), eval(), ufun(), default(), udefault(), hasattr()
 & EDIT()
   edit(<string>, <search>, <replace>[, ... , <searchN>, <replaceN>])
  
-  For each given <search> and <replace> pair, edit() replaces all occurances of <search> in <string> with the corresponding <replace>.
+  For each given <search> and <replace> pair, edit() replaces all occurrences of <search> in <string> with the corresponding <replace>.
   
   If <search> is a caret (^), <replace> is prepended.
   If <search> is a dollar sign ($), <replace> is appended.
@@ -1524,7 +1524,7 @@ See also: followers(), follow, unfollow
  
   For each character in <string>, <object>/<attribute> is called, with the character passed as %0, and its position in the string as %1 (the first character has position 0). The results are concatenated.
   
-  If <start> is given, everything before the first occurance of <start> is copied as-is, without being passed to the <object>/<attribute>. If <end> is given, everything after the first occurance of <end> is copied as-is. The <start> and <end> characters themselves are not copied.
+  If <start> is given, everything before the first occurrence of <start> is copied as-is, without being passed to the <object>/<attribute>. If <end> is given, everything after the first occurrence of <end> is copied as-is. The <start> and <end> characters themselves are not copied.
  
   See 'help foreach2' for examples.
 & FOREACH2
@@ -2453,7 +2453,7 @@ See also: lvthings(), lcon()
     > say lpos(a-bc-def-g, -)
     You say, "1 4 8"
 
-See also: pos(), member(), match()
+See also: pos(), member(), match(), wordpos()
 & LSEARCH()
 & NLSEARCH()
 & SEARCH()
@@ -3204,7 +3204,7 @@ See also: player(), Connection Functions
 
   This function returns the position that <needle> begins in <haystack>. Unlike most other string functions, the first character of <haystack> is numbered 1, not 0. If <needle> is not present in <haystack>, pos() returns #-1.
   
-See also: member(), match(), lpos()
+See also: member(), match(), lpos(), wordpos()
 & POSS()
 & %p
   poss(<object>)
@@ -3360,7 +3360,7 @@ See also: @remit, pemit(), lemit()
 & REMOVE()
   remove(<list>, <words>[, <delimiter>])
 
-  This function removes the first occurance of every word in the list <words> from <list>, and returns the resulting <list>. It is case sensitive.
+  This function removes the first occurrence of every word in the list <words> from <list>, and returns the resulting <list>. It is case sensitive.
   
   Elements of <list> and <words> are both separated by <delimiter>, which defaults to a space.
   
@@ -3742,7 +3742,7 @@ See also: setdiff(), setinter(), setsymdiff()
 & SHA0()
   sha0(<string>)
 
-  Returns the SHA-0 cryptographic hash of the string. See RFC 3174 for more information. Deprecated; use digest() and higher strength algorithms instead.
+  Returns the SHA-0 cryptographic hash of the string. See RFC 3174 for more information. Deprecated; use digest() and higher strength algorithms instead. On servers with newer versions of OpenSSL that no longer provide the algorithm, returns #-1 NOT SUPPORTED.
 
 See also: digest().
 & SHL()
@@ -4316,7 +4316,10 @@ See also: comp(), match(), setq(), r()
   
   strreplace() attempts to preserve ansi: if <text> contains ansi, it will be kept the same. If <text> contains no ansi, but <string> does, <text> will be inserted with the same ansi as the text it replaces. To force <text> to be inserted with no ansi, even if <string> has ansi, wrap it in ansi(n,....).
 
-  Example:
+  Examples:
+    > say strreplace(abcXYZgh, 3, 3, def)
+    You say, "abcdefgh"
+
     > think strreplace(Fix teh typo, 4, 3, the)
     Fix the typo
 
@@ -4594,32 +4597,32 @@ See also: json(), json_map()
 & JSON_QUERY2
   Examples:
     > say json_query(true)
-	You say, "boolean"
-	
-	> @set me=json:[json(array, "abc", "def", "gh\\"i")]
-	> say v(json)
-	You say, "["abc", "def", "gh\"i"]"
-	
-	> say json_query(v(json))
-	You say, "array"
-	> say json_query(v(json), size)
-	You say, "3"
-	> say json_query(v(json), get, 0)
-	You say, ""abc""
-	> say json_query(v(json), get, 2)
-	You say, ""gh\"i""
-	> say json_query(json_query(v(json), get, 2), unescape)
-	You say, "gh"i"
-	
-	> @set me=json:[json(object, foo, "bar", baz, 12345)]
-	> say v(json)
-	You say, "{"foo": "bar", "baz": 12345}"
-	> say json_query(v(json), exists, foo)
-	You say, "1"
-	> say json_query(v(json), exists, bar)
-	You say, "0"
-	> say json_query(v(json), get, baz)
-	You say, "12345"
+    You say, "boolean"
+
+    > @set me=json:[json(array, "abc", "def", "gh\\"i")]
+    > say v(json)
+    You say, "["abc", "def", "gh\"i"]"
+
+    > say json_query(v(json))
+    You say, "array"
+    > say json_query(v(json), size)
+    You say, "3"
+    > say json_query(v(json), get, 0)
+    You say, ""abc""
+    > say json_query(v(json), get, 2)
+    You say, ""gh\"i""
+    > say json_query(json_query(v(json), get, 2), unescape)
+    You say, "gh"i"
+
+    > @set me=json:[json(object, foo, "bar", baz, 12345)]
+    > say v(json)
+    You say, "{"foo": "bar", "baz": 12345}"
+    > say json_query(v(json), exists, foo)
+    You say, "1"
+    > say json_query(v(json), exists, bar)
+    You say, "0"
+    > say json_query(v(json), get, baz)
+    You say, "12345"
 & TESTLOCK()
   testlock(<key>, <victim>)
 
@@ -5155,7 +5158,7 @@ See also: merge(), splice()
   trimpenn(<string>[, <characters to trim>[, <trim style>]])
   trimtiny(<string>[, <trim style>[, <characters to trim>]])
  
-  trim() strips leading and/or trailing occurances of each of the <characters to trim> from <string>.
+  trim() strips leading and/or trailing occurrences of each of the <characters to trim> from <string>.
 
   <characters to trim> defaults to a space.
   

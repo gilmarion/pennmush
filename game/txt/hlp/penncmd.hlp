@@ -586,7 +586,7 @@ See also: use, @ause, ACTION LISTS
   @chown[/preserve] <object>=<player>
   @chown <object>/<attribute>=<player>
 
-  Changes the ownership of <object> to <player>. You can chown things, rooms or exits. Players can't be @chown'd - they always own themselves. To chown a thing, you have to be carrying it. If you do not own an object, you can only chown it if it has the CHOWN_OK flag. If you're not a Wizard, you can only @chown objects to yourself or a Zone Master whose zone-lock you pass.
+  Changes the ownership of <object> to <player>. You can chown things, rooms or exits. Players can't be @chown'd - they always own themselves. To chown a thing, you have to be carrying it. If you do not own an object, you can only chown it if it has the CHOWN_OK flag and you pass its @lock/chown. If you're not a Wizard, you can only @chown objects to yourself or a Zone Master whose zone-lock you pass.
 
   Normally, @chown'ing an object clears privileged flags and powers, and sets the object halt. Wizards can use @chown/preserve to avoid this. Doing this to an active object with queued commands is not recommended, and may have strange and insecure effects.
   
@@ -1671,7 +1671,7 @@ See also: enter, @enter, ENTER_OK, @describe, look, @idescformat, VERBS
   Register  Description
   --------  -------------------------------------------------------------
   Always available:
-  ARGS      The entire argument string. Always available.
+  ARGS      The entire argument string, before evaluation. Always available.
   LS        If the command doesn't have multiple left-side args, LS is set to the entire left-side arg (before the = for EQSPLIT commands)
   LSAC      For commands with multiple left-side-args, the number of left-side args given
   LSAx      The xth left-side-arg, where x is between 1 and LSAC
@@ -2737,6 +2737,8 @@ See also: sql(), sqlescape(), mapsql(), @mapsql
   Sets the list of actions on <object> that will happen whenever the MUSH is restarted. This lets you start up objects that need to be running continuously. It is also useful for setting up @functions and @hooks, which are not saved across restarts.
   
   @startup is also triggered when an object is @restarted or @undestroyed.
+  
+  Note that @startups are NEVER inherited from parent objects.
   
 See also: @restart, @undestroy, ACTION LISTS, @function, @command, @hook
 & @stats
