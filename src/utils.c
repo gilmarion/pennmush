@@ -28,9 +28,12 @@
 #include <unistd.h>
 #endif
 #ifdef WIN32
+#include <windows.h>
+#include <ntstatus.h>
 #include <wtypes.h>
-#include <winbase.h>            /* For GetCurrentProcessId() */
-#include <Wincrypt.h>
+#include <winbase.h> /* For GetCurrentProcessId() */
+#include <Bcrypt.h>
+#pragma comment(lib, "bcrypt.lib")
 #endif
 #ifdef HAVE_STDINT_H
 #include <stdint.h>
@@ -40,7 +43,6 @@
 #include <immintrin.h>
 #endif
 
-#include "SFMT.h"
 #include "ansi.h"
 #include "attrib.h"
 #include "conf.h"
@@ -54,10 +56,9 @@
 #include "mymalloc.h"
 #include "parse.h"
 #include "strutil.h"
+#include "pcg_basic.h"
 
 dbref find_entrance(dbref door);
-void initialize_mt(void);
-
 
 /** Parse object/attribute strings into components.
  * This function takes a string which is of the format obj/attr or attr,
@@ -88,9 +89,9 @@ parse_attrib(dbref player, char *str, dbref *thing, ATTR **attrib)
   *attrib = (ATTR *) atr_get(*thing, upcasestr(name));
 }
 
-
 /** Populate a ufun_attrib struct from an obj/attr pair.
- * \verbatim Given an attribute [<object>/]<name> pair (which may include #lambda),
+ * \verbatim Given an attribute [<object>/]<name> pair (which may include
+ * #lambda),
  * fetch its value, owner (thing), and pe_flags, and store in the struct
  * pointed to by ufun
  * \endverbatim
@@ -111,7 +112,7 @@ fetch_ufun_attrib(const char *attrstring, dbref executor, ufun_attrib *ufun,
   if (!ufun)
     return 0;
 
-  ufun->contents[0] = '\0';
+  memset(ufun->contents, 0, sizeof ufun->contents);
   ufun->errmess = (char *) "";
   ufun->thing = executor;
   ufun->pe_flags = PE_UDEFAULT;
@@ -132,16 +133,16 @@ fetch_ufun_attrib(const char *attrstring, dbref executor, ufun_attrib *ufun,
     attrname = astring;
   }
 
-  if (thingname && (flags & UFUN_LAMBDA)
-      && (strcasecmp(thingname, "#lambda") == 0
-          || strncasecmp(thingname, "#apply", 6) == 0)) {
+  if (thingname && (flags & UFUN_LAMBDA) &&
+      (strcasecmp(thingname, "#lambda") == 0 ||
+       strncasecmp(thingname, "#apply", 6) == 0)) {
     /* It's a lambda. */
 
     ufun->ufun_flags &= ~UFUN_NAME;
     ufun->thing = executor;
     if (strcasecmp(thingname, "#lambda") == 0)
       mush_strncpy(ufun->contents, attrname, BUFFER_LEN);
-    else {                      /* #apply */
+    else { /* #apply */
       char *ucb = ufun->contents;
       unsigned nargs = 1, n;
 
@@ -199,20 +200,20 @@ fetch_ufun_attrib(const char *attrstring, dbref executor, ufun_attrib *ufun,
       return 1;
     }
   }
-  if (!(flags & UFUN_IGNORE_PERMS)
-      && !Can_Read_Attr(executor, ufun->thing, attrib)) {
+  if (!(flags & UFUN_IGNORE_PERMS) &&
+      !Can_Read_Attr(executor, ufun->thing, attrib)) {
     ufun->errmess = e_atrperm;
     return 0;
   }
-  if (!(flags & UFUN_IGNORE_PERMS)
-      && !CanEvalAttr(executor, ufun->thing, attrib)) {
+  if (!(flags & UFUN_IGNORE_PERMS) &&
+      !CanEvalAttr(executor, ufun->thing, attrib)) {
     ufun->errmess = e_perm;
     return 0;
   }
 
   /* DEBUG attributes */
   if (AF_NoDebug(attrib))
-    ufun->pe_flags |= PE_NODEBUG;       /* No_Debug overrides Debug */
+    ufun->pe_flags |= PE_NODEBUG; /* No_Debug overrides Debug */
   else if (AF_Debug(attrib))
     ufun->pe_flags |= PE_DEBUG;
 
@@ -318,11 +319,10 @@ call_ufun_int(ufun_attrib *ufun, char *ret, dbref caller, dbref enactor,
     np = rp;
   }
 
-
   /* And now, make the call! =) */
   ap = ufun->contents;
-  pe_ret = process_expression(ret, &rp, &ap, ufun->thing, caller,
-                              enactor, ufun->pe_flags, PT_DEFAULT, pe_info);
+  pe_ret = process_expression(ret, &rp, &ap, ufun->thing, caller, enactor,
+                              ufun->pe_flags, PT_DEFAULT, pe_info);
   *rp = '\0';
 
   if ((ufun->ufun_flags & UFUN_NAME) && np == rp) {
@@ -372,8 +372,8 @@ call_attrib(dbref thing, const char *attrname, char *ret, dbref enactor,
 {
   ufun_attrib ufun;
   if (!fetch_ufun_attrib(attrname, thing, &ufun,
-                         UFUN_LOCALIZE | UFUN_REQUIRE_ATTR | UFUN_IGNORE_PERMS))
-  {
+                         UFUN_LOCALIZE | UFUN_REQUIRE_ATTR |
+                           UFUN_IGNORE_PERMS)) {
     return 0;
   }
   return !call_ufun(&ufun, ret, thing, enactor, pe_info, pe_regs);
@@ -418,7 +418,8 @@ remove_first(dbref first, dbref what)
     return Next(first);
   } else {
     /* have to find it */
-    DOLIST(prev, first) {
+    DOLIST(prev, first)
+    {
       if (Next(prev) == what) {
         Next(prev) = Next(what);
         return first;
@@ -437,14 +438,14 @@ remove_first(dbref first, dbref what)
 bool
 member(dbref thing, dbref list)
 {
-  DOLIST(list, list) {
+  DOLIST(list, list)
+  {
     if (list == thing)
       return 1;
   }
 
   return 0;
 }
-
 
 /** Is an object inside another, at any level of depth?
  * That is, we check if disallow is inside of from, i.e., if
@@ -497,7 +498,6 @@ unfindable(dbref thing)
   return 0;
 }
 
-
 /** Reverse the order of a dbref chain.
  * \param list dbref at the head of the chain.
  * \return dbref at the head of the reversed chain.
@@ -516,81 +516,59 @@ reverse(dbref list)
   return newlist;
 }
 
-sfmt_t rand_state;
+pcg32_random_t rand_state1, rand_state2;
 
-/** Wrapper to choose a seed and initialize the Mersenne Twister PRNG.
- * The actual MT code lives in SFMT.c and hdrs/SFMT*.h */
+/** Initialize the random number generator used by the mush. Attempts to use a
+ * seed value
+ * provided by the host OS's cryptographic RNG facilities; failing that uses the
+ * current time
+ * and PID. */
 void
-initialize_mt(void)
+initialize_rng(void)
 {
-#ifdef HAVE_DEV_URANDOM
-  int fd;
-  uint32_t buf[128];              /* The linux manpage for /dev/urandom
-                                   advises against reading large amounts of
-                                   data from it; we used to read 624*4 (Or *8 on 64-bit systems)
-                                   bytes. The new figure is much more reasonable, at the cost of reducing the
-				   number of possible starting states by a lot . */
-  int to_read = sizeof buf;
+  uint64_t seeds[4];
+  bool seed_generated __attribute__((__unused__)) = false;
 
-#ifdef __RDRND__
-  to_read = to_read / 2;
-#endif
+#ifdef HAVE_DEV_URANDOM
+  /* Seed from /dev/urandom if available */
+  int fd;
 
   fd = open("/dev/urandom", O_RDONLY);
   if (fd >= 0) {
-    int r = read(fd, buf, to_read);
+    int r = read(fd, (void *) seeds, sizeof seeds);
     close(fd);
     if (r <= 0) {
-      fprintf(stderr,
-              "Couldn't read from /dev/urandom! Resorting to normal seeding method.\n");
+      fprintf(stderr, "Couldn't read from /dev/urandom! Resorting to normal "
+                      "seeding method.\n");
     } else {
-#ifdef __RDRND__
-      /* Also use rdrand to fill in some more bytes when
-	 available. Could just use /dev/urandom for all of it, but
-	 playing around with this is more fun. Plus it spreads the
-	 entropy around a bit. */
-      for (int i = r/4; i < 128; i += 1) {
-	if (_rdrand32_step(buf + i))
-	  r += 4;
-	else
-	  break;      
-      }
-#endif
-      fprintf(stderr, "Seeded RNG with %d bytes from /dev/urandom\n", r);
-      sfmt_init_by_array(&rand_state, buf, r / sizeof buf[0]);
-      return;
+      fprintf(stderr, "Seeding RNG with %d bytes from /dev/urandom\n", r);
+      seed_generated = true;
     }
   } else
-    fprintf(stderr,
-            "Couldn't open /dev/urandom to seed random number generator. Resorting to normal seeding method.\n");
-
+    fprintf(stderr, "Couldn't open /dev/urandom to seed random number "
+                    "generator. Resorting to normal seeding method.\n");
 #endif
-  /* Default seeder. Pick a seed that's fairly random */
+
 #ifdef WIN32
-
-  /* Use the Win32 crypto RNG interface */
-  HCRYPTPROV hCryptProv;  
-  uint32_t buf[128];
-  bool acquired = 1;
-
-  if (!CryptAcquireContext(&hCryptProv, NULL, NULL, PROV_RSA_FULL,
-			   CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
-    fprintf(stderr, "Unable to acquire crypt context: %d\n", GetLastError());
-    acquired = 0;
-  }
-  if (acquired && CryptGenRandom(hCryptProv, sizeof buf, (BYTE *)buf)) {
-    fprintf(stderr, "Seeded RNG with %u bytes from CryptGenRandom()\n",
-	    sizeof buf);
-    sfmt_init_by_array(&rand_state, buf, sizeof buf / sizeof buf[0]);    
+  /* Use the Win32 bcrypto RNG interface */
+  if (BCryptGenRandom(NULL, (PUCHAR) seeds, sizeof seeds,
+                      BCRYPT_USE_SYSTEM_PREFERRED_RNG) == STATUS_SUCCESS) {
+    fprintf(stderr, "Seeding RNG with %I64u bytes from BCryptGenRandom()\n",
+            sizeof seeds);
   } else {
-    sfmt_init_gen_rand(&rand_state, GetCurrentProcessId() | (time(NULL) << 16));
+    seeds[0] = (uint64_t) time(NULL);
+    seeds[1] = (uint64_t) GetCurrentProcessId();
   }
-  if (acquired)
-    CryptReleaseContext(hCryptProv, 0);
-  
 #else
-  sfmt_init_gen_rand(&rand_state, getpid() | (time(NULL) << 16));
+  /* Default seeder. Pick a seed that's slightly random */
+  if (!seed_generated) {
+    seeds[0] = (uint64_t) time(NULL);
+    seeds[1] = (uint64_t) getpid();
+  }
 #endif
+
+  pcg32_srandom_r(&rand_state1, seeds[0], seeds[1]);
+  pcg32_srandom_r(&rand_state2, seeds[2], seeds[3]);
 }
 
 /** Get a uniform random long between low and high values, inclusive.
@@ -600,7 +578,7 @@ initialize_mt(void)
  * \return random number between low and high, or 0 or -1 for error.
  */
 uint32_t
-get_random32(uint32_t low, uint32_t high)
+get_random_u32(uint32_t low, uint32_t high)
 {
   uint32_t x, n, n_limit;
 
@@ -633,10 +611,32 @@ get_random32(uint32_t low, uint32_t high)
   n_limit = UINT32_MAX - (UINT32_MAX % x);
 
   do {
-    n = sfmt_genrand_uint32(&rand_state);
+    n = pcg32_random_r(&rand_state1);
   } while (n >= n_limit);
 
   return low + (n % x);
+}
+
+/** Return a random double in the range [0,1) */
+double
+get_random_d(void)
+{
+  uint64_t a, b, c;
+  a = pcg32_random_r(&rand_state1);
+  b = pcg32_random_r(&rand_state2);
+  c = (a << 32) | b;
+  return ldexp((double) c, -64);
+}
+
+/** Return a random double in the range (0,1) */
+double
+get_random_d2(void)
+{
+  uint64_t a, b, c;
+  a = pcg32_random_r(&rand_state1);
+  b = pcg32_random_r(&rand_state2);
+  c = (a << 32) | b;
+  return ldexp(((double) c) + 0.5, -64);
 }
 
 /** Return an object's alias. We expect a valid object.
@@ -646,7 +646,7 @@ get_random32(uint32_t low, uint32_t high)
 char *
 fullalias(dbref it)
 {
-  static char n[BUFFER_LEN];    /* STATIC */
+  static char n[BUFFER_LEN]; /* STATIC */
   ATTR *a = atr_get_noparent(it, "ALIAS");
 
   if (!IsExit(it)) {
@@ -683,7 +683,7 @@ fullalias(dbref it)
 char *
 shortalias(dbref it)
 {
-  static char n[BUFFER_LEN];    /* STATIC */
+  static char n[BUFFER_LEN]; /* STATIC */
   char *s;
 
   s = fullalias(it);
@@ -705,7 +705,7 @@ shortalias(dbref it)
 char *
 shortname(dbref it)
 {
-  static char n[BUFFER_LEN];    /* STATIC */
+  static char n[BUFFER_LEN]; /* STATIC */
   char *s;
 
   mush_strncpy(n, Name(it), BUFFER_LEN);
@@ -717,7 +717,9 @@ shortname(dbref it)
   return n;
 }
 
-#define set_mp(x) if (had_moniker) *had_moniker = x
+#define set_mp(x)                                                              \
+  if (had_moniker)                                                             \
+  *had_moniker = x
 
 /** Return the ANSI'd name for an object, using its @moniker.
  * Note that this will ALWAYS return the name with ANSI, regardless
@@ -812,7 +814,6 @@ absolute_room(dbref it)
   return AMBIGUOUS;
 }
 
-
 /** Can one object interact with/perceive another in a given way?
  * This funtion checks to see if 'to' can perceive something from
  * 'from'. The types of interactions currently supported include:
@@ -863,7 +864,6 @@ can_interact(dbref from, dbref to, int type, NEW_PE_INFO *pe_info)
   if ((from == Location(to)) || (to == Location(from)) || controls(to, from))
     return 1;
 
-
   lci = local_can_interact_last(from, to, type);
   if (lci != NOTHING)
     return lci;
@@ -900,9 +900,8 @@ next_parent(dbref thing, dbref current, int *parent_count, int *use_ancestor)
 
   (*parent_count)++;
 
-
-  if (!GoodObject(next) && use_ancestor && (*use_ancestor) == 1
-      && !Orphan(thing)) {
+  if (!GoodObject(next) && use_ancestor && (*use_ancestor) == 1 &&
+      !Orphan(thing)) {
     /* Check for ancestor */
     next = Ancestor_Parent(thing);
     (*use_ancestor) = 2;
