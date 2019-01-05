@@ -24,7 +24,7 @@
 #define CHECK_GLOBAL 0x200 /*<< Check for Master Room $-commands */
 #define CHECK_BREAK                                                            \
   0x400 /*<< Do no further checks after a round of $-command matching succeeds \
-           */
+         */
 /* Does NOT include CHECK_BREAK */
 #define CHECK_ALL                                                              \
   (CHECK_INVENTORY | CHECK_NEIGHBORS | CHECK_SELF | CHECK_HERE | CHECK_ZONE |  \
@@ -117,21 +117,21 @@ extern void do_password(dbref executor, dbref enactor, const char *old,
 extern void do_switch(dbref executor, char *expression, char **argv,
                       dbref enactor, int first, int notifyme, int regexp,
                       int queue_type, MQUE *queue_entry);
-extern void do_verb(dbref executor, dbref enactor, char *arg1, char **argv,
-                    MQUE *queue_entry);
+void do_verb(dbref executor, dbref enactor, const char *arg1, char **argv,
+             MQUE *queue_entry);
 extern void do_grep(dbref player, char *obj, char *lookfor, int flag,
                     int insensitive);
 
 /* From rob.c */
-extern void do_give(dbref player, char *recipient, char *amnt, int silent,
-                    NEW_PE_INFO *pe_info);
+void do_give(dbref player, const char *recipient, const char *amnt, int silent,
+             NEW_PE_INFO *pe_info);
 extern void do_buy(dbref player, char *item, char *from, int price,
                    NEW_PE_INFO *pe_info);
 
 /* From set.c */
 extern void do_name(dbref player, const char *name, char *newname);
-extern void do_chown(dbref player, const char *name, const char *newobj,
-                     int preserve, NEW_PE_INFO *pe_info);
+extern int do_chown(dbref player, const char *name, const char *newobj,
+                    int preserve, NEW_PE_INFO *pe_info);
 extern int do_chzone(dbref player, const char *name, const char *newobj,
                      bool noisy, bool preserve, NEW_PE_INFO *pe_info);
 extern int do_set(dbref player, const char *name, char *flag);
@@ -141,16 +141,20 @@ extern void do_cpattr(dbref player, char *oldpair, char **newpair, int move,
 #define EDIT_FIRST 1   /**< Only edit the first occurrence in each attribute. */
 #define EDIT_CHECK                                                             \
   2 /**< Don't actually edit the attr, just show what would happen if we did   \
-       */
+     */
 #define EDIT_QUIET 4 /**< Don't show new values, just report total changes */
 #define EDIT_CASE 8  /**< Perform regexp matching case-sensitively */
 
 extern void do_edit(dbref player, char *it, char **argv, int flags);
 extern void do_edit_regexp(dbref player, char *it, char **argv, int flags,
                            NEW_PE_INFO *pe_info);
-#define TRIGGER_DEFAULT 0
-#define TRIGGER_SPOOF 1
-#define TRIGGER_CLEARREGS 2
+#define TRIGGER_DEFAULT 0x00
+#define TRIGGER_SPOOF 0x01
+#define TRIGGER_CLEARREGS 0x02
+#define TRIGGER_INLINE 0x04
+#define TRIGGER_NOBREAK 0x08
+#define TRIGGER_LOCALIZE 0x10
+#define TRIGGER_MATCH 0x20
 extern void do_trigger(dbref executor, dbref enactor, char *object, char **argv,
                        MQUE *queue_entry, int flags);
 extern void do_use(dbref player, const char *what, NEW_PE_INFO *pe_info);
@@ -246,16 +250,18 @@ extern void do_destroy(dbref player, char *name, int confirm,
 /* From timer.c */
 void init_timer(void);
 void signal_cpu_limit(int signo);
-
-struct squeue *sq_register(time_t w, sq_func f, void *d, const char *ev);
-struct squeue *sq_register_in(int n, sq_func f, void *d, const char *ev);
-void sq_register_loop(int n, sq_func f, void *d, const char *ev);
+struct squeue *sq_register_in_msec(uint64_t n, sq_func f, void *d,
+                                   const char *ev);
+void sq_register_loop_msec(uint64_t n, sq_func f, void *d, const char *ev);
 void sq_cancel(struct squeue *sq);
 bool sq_run_one(void);
 bool sq_run_all(void);
-int sq_secs_till_next(void);
-
+uint64_t sq_msecs_till_next(void);
 void init_sys_events(void);
+#define sq_register_in(n, f, d, ev)                                            \
+  sq_register_in_msec(SECS_TO_MSECS(n), f, d, ev)
+#define sq_register_loop(n, f, d, ev)                                          \
+  sq_register_loop_msec(SECS_TO_MSECS(n), f, d, ev)
 
 /* From version.c */
 extern void do_version(dbref player);

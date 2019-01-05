@@ -40,6 +40,7 @@
 #include "parse.h"
 #include "privtab.h"
 #include "strutil.h"
+#include "charclass.h"
 
 int forbidden_name(const char *name);
 static void grep_add_attr(char *buff, char **bp, dbref player, int count,
@@ -103,9 +104,10 @@ charge_action(dbref thing)
     strcpy(tbuf2, atr_value(b));
     num = atoi(tbuf2);
     if (num > 0) {
+      char tmp[100];
       /* charges left, decrement and execute */
-      (void) atr_add(thing, "CHARGES", tprintf("%d", num - 1),
-                     Owner(b->creator), 0);
+      snprintf(tmp, sizeof tmp, "%d", num - 1);
+      (void) atr_add(thing, "CHARGES", tmp, Owner(b->creator), 0);
       return 1;
     } else {
       /* no charges left, try to execute runout */
@@ -548,11 +550,13 @@ get_current_quota(dbref who)
   int i;
   int limit;
   int owned = 0;
+  char tmp[100];
 
   /* if he's got an RQUOTA attribute, his remaining quota is that */
   a = atr_get_noparent(Owner(who), "RQUOTA");
-  if (a)
+  if (a) {
     return parse_integer(atr_value(a));
+  }
 
   /* else, count up his objects. If he has less than the START_QUOTA,
    * then his remaining quota is that minus his number of current objects.
@@ -560,17 +564,21 @@ get_current_quota(dbref who)
    * if he doesn't have it.
    */
 
-  for (i = 0; i < db_top; i++)
-    if (Owner(i) == Owner(who))
+  for (i = 0; i < db_top; i++) {
+    if (Owner(i) == Owner(who)) {
       owned++;
+    }
+  }
   owned--; /* don't count the player himself */
 
-  if (owned <= START_QUOTA)
+  if (owned <= START_QUOTA) {
     limit = START_QUOTA - owned;
-  else
+  } else {
     limit = owned;
+  }
 
-  (void) atr_add(Owner(who), "RQUOTA", tprintf("%d", limit), GOD, 0);
+  snprintf(tmp, sizeof tmp, "%d", limit);
+  (void) atr_add(Owner(who), "RQUOTA", tmp, GOD, 0);
 
   return limit;
 }
@@ -582,8 +590,9 @@ get_current_quota(dbref who)
 void
 change_quota(dbref who, int payment)
 {
-  (void) atr_add(Owner(who), "RQUOTA",
-                 tprintf("%d", get_current_quota(who) + payment), GOD, 0);
+  char tmp[100];
+  snprintf(tmp, sizeof tmp, "%d", get_current_quota(who) + payment);
+  (void) atr_add(Owner(who), "RQUOTA", tmp, GOD, 0);
 }
 
 /** Debit a player's quota, if they can afford it.
@@ -665,7 +674,7 @@ ok_name(const char *n, int is_exit)
 
   /* only printable characters */
   for (p = name; p && *p; p++) {
-    if (!isprint(*p))
+    if (!char_isprint(*p))
       return 0;
     if (ONLY_ASCII_NAMES && *p > 127)
       return 0;
@@ -918,7 +927,7 @@ ok_password(const char *password)
     return 0;
 
   for (scan = password; *scan; scan++) {
-    if (!(isprint(*scan) && !isspace(*scan))) {
+    if (!(char_isprint(*scan) && !isspace(*scan))) {
       return 0;
     }
     if (*scan == '=')
@@ -1002,7 +1011,7 @@ ok_function_name(const char *name)
    * to find at least one uppercase alpha
    */
   for (p = name; p && *p; p++) {
-    if (isspace(*p) || !isprint(*p))
+    if (isspace(*p) || !ascii_isprint(*p))
       return 0;
     if (isupper(*p))
       cnt++;
@@ -1185,16 +1194,17 @@ parse_match_possessor(dbref player, char **str, int exits)
  * \param type type of message to return.
  * \param message name of attribute containing the message.
  * \param def default message to return.
+ * \param pe_info the pe_info to pass when evaluating the attribute
  */
 void
 page_return(dbref player, dbref target, const char *type, const char *message,
-            const char *def)
+            const char *def, NEW_PE_INFO *pe_info)
 {
   char buff[BUFFER_LEN];
   struct tm *ptr;
 
   if (message && *message) {
-    if (call_attrib(target, message, buff, player, NULL, NULL)) {
+    if (call_attrib(target, message, buff, player, pe_info, NULL)) {
       if (*buff) {
         ptr = (struct tm *) localtime(&mudtime);
         notify_format(player, T("%s message from %s: %s"), type,
@@ -1270,13 +1280,14 @@ nearby(dbref obj1, dbref obj2)
  * \param queue_entry The queue entry \@verb is running in
  */
 void
-do_verb(dbref executor, dbref enactor, char *arg1, char **argv,
+do_verb(dbref executor, dbref enactor, const char *arg1, char **argv,
         MQUE *queue_entry)
 {
   dbref victim;
   dbref actor;
   int i;
   PE_REGS *pe_regs = NULL;
+  char tmp1[BUFFER_LEN], tmp2[BUFFER_LEN];
 
   /* find the object that we want to read the attributes off
    * (the object that was the victim of the command)
@@ -1327,22 +1338,24 @@ do_verb(dbref executor, dbref enactor, char *arg1, char **argv,
   }
   pe_regs_qcopy(pe_regs, queue_entry->pe_info->regvals);
 
-  real_did_it(actor, victim, upcasestr(argv[2]), argv[3], upcasestr(argv[4]),
-              argv[5], NULL, Location(actor), pe_regs, NA_INTER_HEAR, AN_SYS);
+  real_did_it(actor, victim, strupper_r(argv[2], tmp1, sizeof tmp1), argv[3],
+              strupper_r(argv[4], tmp2, sizeof tmp2), argv[5], NULL,
+              Location(actor), pe_regs, NA_INTER_HEAR, AN_SYS);
 
   /* Now we copy our args into the stack, and do the command. */
 
-  if (argv[6] && *argv[6])
-    queue_attribute_base(victim, upcasestr(argv[6]), actor, 0, pe_regs,
-                         (queue_entry->queue_type & QUEUE_EVENT));
+  if (argv[6] && *argv[6]) {
+    queue_attribute_base(victim, strupper_r(argv[6], tmp1, sizeof tmp1), actor,
+                         0, pe_regs, (queue_entry->queue_type & QUEUE_EVENT));
+  }
 
   pe_regs_free(pe_regs);
 }
 
 /** Helper data for regexp \@greps */
 struct regrep_data {
-  pcre *re;          /**< Pointer to compiled regular expression */
-  pcre_extra *study; /**< Pointer to studied data about re */
+  pcre2_code *re; /**< Pointer to compiled regular expression */
+  pcre2_match_data *md;
   char
     *buff;   /**< Buffer to store regrep results, or NULL to report to player */
   char **bp; /**< Pointer to address of insertion point in buff, or NULL */
@@ -1410,11 +1423,11 @@ grep_helper(dbref player, dbref thing __attribute__((__unused__)),
       if (!(cs ? strncmp(s, gd->findstr, gd->findlen)
                : strncasecmp(s, gd->findstr, gd->findlen))) {
         ansi_string *repl;
+        char abuff[BUFFER_LEN];
         matched = 1;
-        repl = parse_ansi_string(tprintf("%s%.*s%s",
-                                         ANSI_HILITE,
-                                         gd->findlen, s,
-                                         ANSI_END));
+        snprintf(abuff, sizeof abuff, "%s%.*s%s", ANSI_HILITE, gd->findlen, s,
+                 ANSI_END);
+        repl = parse_ansi_string(abuff);
         ansi_string_replace(aval, (s - aval->text), gd->findlen, repl);
         free_ansi_string(repl);
         s += gd->findlen;
@@ -1446,22 +1459,24 @@ regrep_helper(dbref player, dbref thing __attribute__((__unused__)),
 {
   struct regrep_data *rgd = args;
   char *s;
-  int offsets[99];
-  int subpatterns, search = 0;
+  int subpatterns;
+  PCRE2_SIZE search = 0;
   ansi_string *orig, *repl;
   char rbuff[BUFFER_LEN];
   char *rbp = rbuff;
 
   s = atr_value(attrib);
   orig = parse_ansi_string(s);
-  if ((subpatterns = pcre_exec(rgd->re, rgd->study, orig->text, orig->len,
-                               search, 0, offsets, 99)) < 0) {
+  if ((subpatterns =
+         pcre2_match(rgd->re, (const PCRE2_UCHAR *) orig->text, orig->len,
+                     search, re_match_flags, rgd->md, re_match_ctx)) < 0) {
     free_ansi_string(orig);
     return 0;
   }
-  while (subpatterns >= 0) {
+  while (subpatterns >= 0 && !cpu_time_limit_hit) {
+    PCRE2_SIZE *offsets = pcre2_get_ovector_pointer(rgd->md);
     safe_str(ANSI_HILITE, rbuff, &rbp);
-    ansi_pcre_copy_substring(orig, offsets, subpatterns, 0, 0, rbuff, &rbp);
+    ansi_pcre_copy_substring(orig, rgd->md, subpatterns, 0, 0, rbuff, &rbp);
     safe_str(ANSI_END, rbuff, &rbp);
     *rbp = '\0';
     if (offsets[0] >= search) {
@@ -1480,10 +1495,12 @@ regrep_helper(dbref player, dbref thing __attribute__((__unused__)),
 
       free_ansi_string(repl);
       rbp = rbuff;
-      if (search >= orig->len)
+      if (search >= (uint32_t) orig->len) {
         break;
-      subpatterns = pcre_exec(rgd->re, rgd->study, orig->text, orig->len,
-                              search, 0, offsets, 99);
+      }
+      subpatterns =
+        pcre2_match(rgd->re, (const PCRE2_UCHAR *) orig->text, orig->len,
+                    search, re_match_flags, rgd->md, re_match_ctx);
     }
   }
   safe_ansi_string(orig, 0, orig->len, rbuff, &rbp);
@@ -1516,64 +1533,44 @@ grep_util(dbref player, dbref thing, char *attrs, char *findstr, char *buff,
   if (flags & GREP_REGEXP) {
     /* regexp grep */
     struct regrep_data rgd;
-    const char *errptr;
-    int erroffset;
-    int reflags = 0;
-    bool free_study = false;
+    int errcode;
+    PCRE2_SIZE erroffset;
+    int reflags = re_compile_flags;
 
-    if (flags & GREP_NOCASE)
-      reflags |= PCRE_CASELESS;
+    if (flags & GREP_NOCASE) {
+      reflags |= PCRE2_CASELESS;
+    }
 
-    if ((rgd.re = pcre_compile(cleanfind, reflags, &errptr, &erroffset,
-                               tables)) == NULL) {
+    if ((rgd.re = pcre2_compile((const PCRE2_UCHAR *) cleanfind,
+                                PCRE2_ZERO_TERMINATED, reflags, &errcode,
+                                &erroffset, re_compile_ctx)) == NULL) {
+      char errstr[120];
+      pcre2_get_error_message(errcode, (PCRE2_UCHAR *) errstr, sizeof errstr);
       /* Matching error. */
       if (buff) {
         safe_str(T("#-1 REGEXP ERROR: "), buff, bp);
-        safe_str(errptr, buff, bp);
+        safe_str(errstr, buff, bp);
       } else {
-        notify_format(player, T("Invalid regexp: %s"), errptr);
+        notify_format(player, T("Invalid regexp: %s"), errstr);
       }
       return 0;
     }
     ADD_CHECK("pcre");
-    rgd.study = pcre_study(rgd.re, pcre_public_study_flags, &errptr);
-    if (errptr != NULL) {
-      if (buff) {
-        safe_str(T("#-1 REGEXP ERROR: "), buff, bp);
-        safe_str(errptr, buff, bp);
-      } else {
-        notify_format(player, T("Invalid regexp: %s"), errptr);
-      }
-      pcre_free(rgd.re);
-      DEL_CHECK("pcre");
-      return 0;
-    }
-    if (rgd.study) {
-      ADD_CHECK("pcre.extra");
-      free_study = true;
-      set_match_limit(rgd.study);
-    } else {
-      rgd.study = default_match_limit();
-    }
+    pcre2_jit_compile(rgd.re, PCRE2_JIT_COMPLETE);
+    rgd.md = pcre2_match_data_create_from_pattern(rgd.re, NULL);
     rgd.buff = buff;
     rgd.bp = bp;
     rgd.count = 0;
 
     if (flags & GREP_PARENT) {
-      atr_iter_get_parent(player, thing, attrs, 0, 0, regrep_helper,
+      atr_iter_get_parent(player, thing, attrs, AIG_NONE, regrep_helper,
                           (void *) &rgd);
     } else {
-      atr_iter_get(player, thing, attrs, 0, 0, regrep_helper, (void *) &rgd);
+      atr_iter_get(player, thing, attrs, AIG_NONE, regrep_helper,
+                   (void *) &rgd);
     }
-    if (free_study) {
-#ifdef PCRE_CONFIG_JIT
-      pcre_free_study(rgd.study);
-#else
-      pcre_free(rgd.study);
-#endif
-      DEL_CHECK("pcre.extra");
-    }
-    pcre_free(rgd.re);
+    pcre2_code_free(rgd.re);
+    pcre2_match_data_free(rgd.md);
     DEL_CHECK("pcre");
 
     return rgd.count;
@@ -1588,10 +1585,10 @@ grep_util(dbref player, dbref thing, char *attrs, char *findstr, char *buff,
     gd.flags = flags;
 
     if (flags & GREP_PARENT) {
-      atr_iter_get_parent(player, thing, attrs, 0, 0, grep_helper,
+      atr_iter_get_parent(player, thing, attrs, AIG_NONE, grep_helper,
                           (void *) &gd);
     } else {
-      atr_iter_get(player, thing, attrs, 0, 0, grep_helper, (void *) &gd);
+      atr_iter_get(player, thing, attrs, AIG_NONE, grep_helper, (void *) &gd);
     }
 
     return gd.count;

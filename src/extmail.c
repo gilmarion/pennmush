@@ -97,6 +97,7 @@
 #include "parse.h"
 #include "pueblo.h"
 #include "strutil.h"
+#include "charclass.h"
 
 extern int do_convtime(const char *str, struct tm *ttm); /* funtime.c */
 
@@ -216,7 +217,7 @@ get_subject(MAIL *mp)
         *p = '\0';
         break;
       }
-      if (!isprint(*p)) {
+      if (!char_isprint(*p)) {
         *p = ' ';
       }
     }
@@ -434,11 +435,9 @@ do_mail_status(dbref player, const char *msglist, const char *status)
     return;
   }
 
-  if (strcasecmp("urgent", status) == 0 ||
-      strcasecmp("unurgent", status) == 0)
+  if (strcasecmp("urgent", status) == 0 || strcasecmp("unurgent", status) == 0)
     flag = M_URGENT;
-  else if (strcasecmp("read", status) == 0 ||
-           strcasecmp("unread", status) == 0)
+  else if (strcasecmp("read", status) == 0 || strcasecmp("unread", status) == 0)
     flag = M_MSGREAD;
   else if (strcasecmp("cleared", status) == 0 ||
            strcasecmp("uncleared", status) == 0)
@@ -529,13 +528,15 @@ do_mail_flags(dbref player, const char *msglist, mail_flag flag, bool negate)
             }
           } else {
             if (Unread(mp) && !negate) {
-              notify_format(player, T("MAIL: Unread Msg #%d:%d cleared! Use "
-                                      "@mail/unclear %d:%d to recover."),
+              notify_format(player,
+                            T("MAIL: Unread Msg #%d:%d cleared! Use "
+                              "@mail/unclear %d:%d to recover."),
                             (int) Folder(mp), i[Folder(mp)], (int) Folder(mp),
                             i[Folder(mp)]);
             } else {
-              notify_format(player, (negate ? T("MAIL: Msg #%d:%d uncleared.")
-                                            : T("MAIL: Msg #%d:%d cleared.")),
+              notify_format(player,
+                            (negate ? T("MAIL: Msg #%d:%d uncleared.")
+                                    : T("MAIL: Msg #%d:%d cleared.")),
                             (int) Folder(mp), i[Folder(mp)]);
             }
           }
@@ -751,11 +752,13 @@ do_mail_list(dbref player, const char *msglist)
     return;
   }
   FA_Init(i);
-  folder = (AllInFolder(ms) || ms.player != 0) ? player_folder(player) : MSFolder(ms);
+  folder =
+    (AllInFolder(ms) || ms.player != 0) ? player_folder(player) : MSFolder(ms);
   if (SUPPORT_PUEBLO)
     notify_noenter(player, open_tag("SAMP"));
-  notify_format(player, T("---------------------------  MAIL (folder %2d)  "
-                          "------------------------------"),
+  notify_format(player,
+                T("---------------------------  MAIL (folder %2d)  "
+                  "------------------------------"),
                 (int) folder);
   for (mp = find_exact_starting_point(player); mp && (mp->to == player);
        mp = mp->next) {
@@ -763,13 +766,15 @@ do_mail_list(dbref player, const char *msglist)
       i[Folder(mp)]++;
       if (mail_match(player, mp, ms, i[Folder(mp)])) {
         /* list it */
-        if (SUPPORT_HTML)
-          notify_noenter(player,
-                         tprintf("%c%cA XCH_CMD=\"@mail/read %d:%d\" "
-                                 "XCH_HINT=\"Read message %d in folder %d\"%c",
-                                 TAG_START, MARKUP_HTML, (int) Folder(mp),
-                                 i[Folder(mp)], i[Folder(mp)], (int) Folder(mp),
-                                 TAG_END));
+        if (SUPPORT_HTML) {
+          char buff[BUFFER_LEN];
+          snprintf(buff, sizeof buff,
+                   "%c%cA XCH_CMD=\"@mail/read %d:%d\" "
+                   "XCH_HINT=\"Read message %d in folder %d\"%c",
+                   TAG_START, MARKUP_HTML, (int) Folder(mp), i[Folder(mp)],
+                   i[Folder(mp)], (int) Folder(mp), TAG_END);
+          notify_noenter(player, buff);
+        }
         strcpy(subj, chopstr(get_subject(mp), 28));
         strcpy(sender, get_sender(mp, 0, 12, &isplayer));
         safe_fill_to(' ', 12, sender);
@@ -781,15 +786,19 @@ do_mail_list(dbref player, const char *msglist)
                          : ' '),
                       sender, 30, subj,
                       mail_list_time(show_time(mp->time, 0), 1));
-        if (SUPPORT_HTML)
-          notify_noenter(player,
-                         tprintf("%c%c/A%c", TAG_START, MARKUP_HTML, TAG_END));
+        if (SUPPORT_HTML) {
+          char buff[10];
+          snprintf(buff, sizeof buff, "%c%c/A%c", TAG_START, MARKUP_HTML,
+                   TAG_END);
+          notify_noenter(player, buff);
+        }
       }
     }
   }
   notify(player, DASH_LINE);
-  if (SUPPORT_PUEBLO)
+  if (SUPPORT_PUEBLO) {
     notify(player, close_tag("SAMP"));
+  }
   return;
 }
 
@@ -893,14 +902,16 @@ do_mail_reviewread(dbref player, dbref target, const char *msglist)
           show_time(mp->time, 0), i, status_string(mp));
         notify_format(player, T("Subject: %s"), get_subject(mp));
         notify(player, DASH_LINE);
-        if (SUPPORT_PUEBLO)
+        if (SUPPORT_PUEBLO) {
           notify_noenter(player, close_tag("SAMP"));
+        }
         strcpy(tbuf1, get_message(mp));
         notify(player, tbuf1);
-        if (SUPPORT_PUEBLO)
+        if (SUPPORT_PUEBLO) {
           notify(player, wrap_tag("SAMP", DASH_LINE));
-        else
+        } else {
           notify(player, DASH_LINE);
+        }
       }
     }
   }
@@ -908,7 +919,6 @@ do_mail_reviewread(dbref player, dbref target, const char *msglist)
     /* ran off the end of the list without finding anything */
     notify(player, T("MAIL: No matching messages."));
   }
-  return;
 }
 
 /** List the flags, number, sender, subject, and date of another
@@ -966,12 +976,15 @@ do_mail_reviewlist(dbref player, dbref target)
     if (mail_match(player, mp, ms, i)) {
       /* list it */
       i++;
-      if (SUPPORT_HTML)
-        notify_noenter(player,
-                       tprintf("%c%cA XCH_CMD=\"@mail/review %s=%d\" "
-                               "XCH_HINT=\"Read message %d sent to %s\"%c",
-                               TAG_START, MARKUP_HTML, Name(mp->to), i, i,
-                               Name(mp->to), TAG_END));
+      if (SUPPORT_HTML) {
+        char buff[BUFFER_LEN];
+        snprintf(buff, sizeof buff,
+                 "%c%cA XCH_CMD=\"@mail/review %s=%d\" "
+                 "XCH_HINT=\"Read message %d sent to %s\"%c",
+                 TAG_START, MARKUP_HTML, Name(mp->to), i, i, Name(mp->to),
+                 TAG_END);
+        notify_noenter(player, buff);
+      }
       strcpy(subj, chopstr(get_subject(mp), 28));
       if (!nbuff[0]) {
         np = nbuff;
@@ -984,20 +997,24 @@ do_mail_reviewlist(dbref player, dbref target)
       }
       isplayer = IsPlayer(mp->to);
       notify_format(player, "[%s]    %-3d %c%-12s  %-*s %s", status_chars(mp),
-                    i, (isplayer && (Connected(mp->to) &&
-                                     (!hidden(mp->to) || Priv_Who(player)))
-                          ? '*'
-                          : ' '),
+                    i,
+                    (isplayer && (Connected(mp->to) &&
+                                  (!hidden(mp->to) || Priv_Who(player)))
+                       ? '*'
+                       : ' '),
                     nbuff, 30, subj, mail_list_time(show_time(mp->time, 0), 1));
-      if (SUPPORT_HTML)
-        notify_noenter(player,
-                       tprintf("%c%c/A%c", TAG_START, MARKUP_HTML, TAG_END));
+      if (SUPPORT_HTML) {
+        char buff[10];
+        snprintf(buff, sizeof buff, "%c%c/A%c", TAG_START, MARKUP_HTML,
+                 TAG_END);
+        notify_noenter(player, buff);
+      }
     }
   }
   notify(player, DASH_LINE);
-  if (SUPPORT_PUEBLO)
+  if (SUPPORT_PUEBLO) {
     notify(player, close_tag("SAMP"));
-  return;
+  }
 }
 
 /** Review mail.
@@ -1182,7 +1199,7 @@ do_mail_purge(dbref player)
       nextp = mp->next;
     }
   }
-  set_objdata(player, "MAIL", NULL);
+  delete_objdata(player, "MAIL");
   if (command_check_byname(player, "@MAIL", NULL))
     notify(player, T("MAIL: Mailbox purged."));
   return;
@@ -1490,8 +1507,9 @@ send_mail(dbref player, dbref target, char *subject, char *message,
       notify_format(player, T("MAIL: You sent your message to %s."),
                     AName(target, AN_SYS, NULL));
     else
-      notify_format(player, T("MAIL: Your message was not sent to %s due to a "
-                              "mail forwarding problem."),
+      notify_format(player,
+                    T("MAIL: Your message was not sent to %s due to a "
+                      "mail forwarding problem."),
                     AName(target, AN_SYS, NULL));
   }
 }
@@ -1591,19 +1609,25 @@ real_send_mail(dbref player, dbref target, char *subject, char *message,
 
   /* Deal with the subject */
   cp = remove_markup(subject, NULL);
-  if (subject && cp && *cp)
+  if (subject && cp && *cp) {
     strcpy(sbuf, cp);
-  else
+  } else {
     strcpy(sbuf, T("(no subject)"));
-  if ((flags & M_FORWARD) && !string_prefix(sbuf, "Fwd:"))
-    newp->subject = compress(chopstr(tprintf("Fwd: %s", sbuf), SUBJECT_LEN));
-  else if ((flags & M_REPLY) && !string_prefix(sbuf, "Re:"))
-    newp->subject = compress(chopstr(tprintf("Re: %s", sbuf), SUBJECT_LEN));
-  else if ((a = atr_get_noparent(player, "MAILSUBJECT")) != NULL)
+  }
+  if ((flags & M_FORWARD) && !string_prefix(sbuf, "Fwd:")) {
+    char buff[BUFFER_LEN];
+    snprintf(buff, sizeof buff, "Fwd: %.*s", SUBJECT_LEN, sbuf);
+    newp->subject = compress(chopstr(buff, SUBJECT_LEN));
+  } else if ((flags & M_REPLY) && !string_prefix(sbuf, "Re:")) {
+    char buff[BUFFER_LEN];
+    snprintf(buff, sizeof buff, "Re: %.*s", SUBJECT_LEN, sbuf);
+    newp->subject = compress(chopstr(buff, SUBJECT_LEN));
+  } else if ((a = atr_get_noparent(player, "MAILSUBJECT")) != NULL) {
     /* Don't bother to uncompress a->value */
     newp->subject = strdup(AL_STR(a));
-  else
+  } else {
     newp->subject = compress(sbuf);
+  }
   if (flags & M_FORWARD) {
     /* Forwarding passes the message already compressed */
     size_t len = strlen(message) + 1;
@@ -1869,14 +1893,17 @@ do_mail_stats(dbref player, char *name, enum mail_stats_type full)
           tchars += strlen(get_message(mp));
         }
       }
-      notify_format(player, T("MAIL: There are %d old msgs in the mail spool, "
-                              "totalling %d characters."),
+      notify_format(player,
+                    T("MAIL: There are %d old msgs in the mail spool, "
+                      "totalling %d characters."),
                     fr, fchars);
-      notify_format(player, T("MAIL: There are %d new msgs in the mail spool, "
-                              "totalling %d characters."),
+      notify_format(player,
+                    T("MAIL: There are %d new msgs in the mail spool, "
+                      "totalling %d characters."),
                     fu, tchars);
-      notify_format(player, T("MAIL: There are %d cleared msgs in the mail "
-                              "spool, totalling %d characters."),
+      notify_format(player,
+                    T("MAIL: There are %d cleared msgs in the mail "
+                      "spool, totalling %d characters."),
                     fc, cchars);
       return;
     }
@@ -1936,8 +1963,9 @@ do_mail_stats(dbref player, char *name, enum mail_stats_type full)
       player,
       T("%d messages sent, %d unread, %d cleared, totalling %d characters."),
       fc + fr + fu, fu, fc, fchars);
-    notify_format(player, T("%d messages received, %d unread, %d cleared, "
-                            "totalling %d characters."),
+    notify_format(player,
+                  T("%d messages received, %d unread, %d cleared, "
+                    "totalling %d characters."),
                   tc + tr + tu, tu, tc, tchars);
   }
 
@@ -2531,10 +2559,9 @@ load_mail(PENNFILE *fp)
       char buff[20];
       if (!penn_fgets(buff, sizeof buff, fp))
         do_rawlog(LT_ERR, "MAIL: Missing end-of-dump marker in mail database.");
-      else if (strcmp(buff,
-                      (mail_flags & MDBF_NEW_EOD)
-                        ? "***END OF DUMP***\n"
-                        : "*** END OF DUMP ***\n") == 0)
+      else if (strcmp(buff, (mail_flags & MDBF_NEW_EOD)
+                              ? "***END OF DUMP***\n"
+                              : "*** END OF DUMP ***\n") == 0)
         return 1;
       else
         do_rawlog(LT_ERR, "MAIL: Trailing garbage in the mail database.");
@@ -2647,9 +2674,9 @@ load_mail(PENNFILE *fp)
     char buff[20];
     if (!penn_fgets(buff, sizeof buff, fp))
       do_rawlog(LT_ERR, "MAIL: Missing end-of-dump marker in mail database.");
-    else if (strcmp(buff,
-                    (mail_flags & MDBF_NEW_EOD) ? EOD
-                                                : "*** END OF DUMP ***\n") != 0)
+    else if (strcmp(buff, (mail_flags & MDBF_NEW_EOD)
+                            ? EOD
+                            : "*** END OF DUMP ***\n") != 0)
       /* There's still stuff. Icky. */
       do_rawlog(LT_ERR, "MAIL: Trailing garbage in the mail database.");
   }
@@ -2691,7 +2718,7 @@ get_folder_name(dbref player, int fld)
   ATTR *a;
 
   /* Get the name of the folder, or "nameless" */
-  sprintf(pat, "%d:", fld);
+  snprintf(pat, sizeof pat, "%d:", fld);
   old = NULL;
   a = (ATTR *) atr_get_noparent(player, "MAILFOLDERS");
   if (!a) {
@@ -2739,7 +2766,7 @@ add_folder_name(dbref player, int fld, const char *name)
     snprintf(new, BUFFER_LEN, "%d:%s:%d ", fld, strupper(name), fld);
   else
     strcpy(new, " ");
-  sprintf(pat, "%d:", fld);
+  snprintf(pat, BUFFER_LEN, "%d:", fld);
   /* get the attrib and the old string, if any */
   old = NULL;
   a = (ATTR *) atr_get_noparent(player, "MAILFOLDERS");
@@ -2795,9 +2822,9 @@ set_player_folder(dbref player, int fnum)
 {
   /* Set a player's folder to fnum */
   ATTR *a;
-  char tbuf1[BUFFER_LEN];
+  char tbuf1[50];
 
-  sprintf(tbuf1, "%d", fnum);
+  snprintf(tbuf1, sizeof tbuf1, "%d", fnum);
   a = (ATTR *) atr_match("MAILCURF");
   if (a)
     (void) atr_add(player, a->name, tbuf1, GOD, a->flags);
@@ -2869,7 +2896,7 @@ parse_msglist(const char *msglist, struct mail_selector *ms, dbref player)
   /* Initialize the mail selector - this matches all messages */
   ms->low = 0;
   ms->high = 0;
-  ms->flags = 0x00FF | M_MSUNREAD;
+  ms->flags = 0x00FF | M_MSUNREAD | FolderBit(player_folder(player));
   ms->player = 0;
   ms->days = -1;
   ms->day_comp = 0;
@@ -2879,12 +2906,11 @@ parse_msglist(const char *msglist, struct mail_selector *ms, dbref player)
     return 1;
   }
   /* Don't mess with msglist itself */
-  strncpy(tbuf1, msglist, BUFFER_LEN - 1);
+  mush_strncpy(tbuf1, msglist, BUFFER_LEN);
   p = tbuf1;
   while (p && *p && isspace(*p))
     p++;
   if (!p || !*p) {
-    ms->flags |= M_FOLDER;
     return 1; /* all messages in current folder */
   }
   if (isdigit(*p) || *p == '-') {
@@ -2893,6 +2919,7 @@ parse_msglist(const char *msglist, struct mail_selector *ms, dbref player)
       return 0;
     }
     /* remove current folder when other folder specified */
+    ms->flags &= ~FolderBit(player_folder(player));
     ms->flags |= FolderBit(folder);
   } else if (*p == '~') {
     /* exact # of days old */
@@ -2981,7 +3008,7 @@ parse_msglist(const char *msglist, struct mail_selector *ms, dbref player)
   } else if (!strcasecmp(p, "clear") || !strcasecmp(p, "cleared")) {
     ms->flags = M_CLEARED | M_FOLDER;
   } else if (!strcasecmp(p, "tag") || !strcasecmp(p, "tagged")) {
-    ms->flags = M_TAG;
+    ms->flags = M_TAG | M_FOLDER;
   } else if (!strcasecmp(p, "mass")) {
     ms->flags = M_MASS;
   } else if (!strcasecmp(p, "me")) {
@@ -3289,7 +3316,7 @@ filter_mail(dbref from, dbref player, char *subject, char *message,
   pe_regs_free(pe_regs);
 
   if (*buff) {
-    sprintf(buf, "0:%d", mailnumber);
+    snprintf(buf, sizeof buf, "0:%d", mailnumber);
     do_mail_file(player, buf, buff);
   }
 }

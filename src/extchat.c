@@ -40,6 +40,7 @@
 #include "privtab.h"
 #include "pueblo.h"
 #include "strutil.h"
+#include "charclass.h"
 
 static CHAN *new_channel(void);
 static CHANLIST *new_chanlist(const void *hint);
@@ -1652,11 +1653,13 @@ do_cemit(dbref player, const char *name, const char *msg, int flags)
     notify(player, T("What do you want to emit?"));
     return;
   }
-  if (flags & PEMIT_SILENT)
+  if (flags & PEMIT_SILENT) {
     cb_flags |= CB_QUIET;
+  }
 
-  if (!(flags & PEMIT_SPOOF))
+  if (!(flags & PEMIT_SPOOF)) {
     cb_flags |= CB_NOSPOOF; /* Show NOSPOOF headers */
+  }
 
   channel_send(chan, player, cb_flags, msg);
   ChanNumMsgs(chan)++;
@@ -1683,6 +1686,7 @@ do_chan_admin(dbref player, char *name, const char *perms,
   boolexp key;
   char old[BUFFER_LEN];
   char announcebuff[BUFFER_LEN];
+  char bbuff[20];
 
   if (!name || !*name) {
     notify(player, T("You must specify a channel."));
@@ -1748,7 +1752,8 @@ do_chan_admin(dbref player, char *name, const char *perms,
       giveto(Owner(player), CHANNEL_COST);
       return;
     }
-    key = parse_boolexp(player, tprintf("=#%d", player), chan_mod_lock);
+    snprintf(bbuff, sizeof bbuff, "=#%d", player);
+    key = parse_boolexp(player, bbuff, chan_mod_lock);
     if (!key) {
       mush_free(chan, "channel");
       notify(player, T("CHAT: No more memory for channels!"));
@@ -1810,8 +1815,8 @@ do_chan_admin(dbref player, char *name, const char *perms,
       mush_free(ChanName(chan), "channel.name");
     ChanName(chan) = mush_strdup(perms, "channel.name");
     insert_channel(&chan);
-    snprintf(announcebuff, BUFFER_LEN, T("has renamed %s to %s."), old,
-             ChanName(chan));
+    snprintf(announcebuff, BUFFER_LEN, T("has renamed %.*s to %.*s."),
+             CHAN_NAME_LEN, old, CHAN_NAME_LEN, ChanName(chan));
     channel_send(chan, player, CB_CHECKQUIET | CB_PRESENCE | CB_POSE,
                  announcebuff);
     notify(player, T("Channel renamed."));
@@ -1870,7 +1875,7 @@ ok_channel_name(const char *n, CHAN *unique)
 
   /* only printable characters */
   for (p = name; p && *p; p++) {
-    if (!isprint(*p) || *p == '|')
+    if (!char_isprint(*p) || *p == '|')
       return NAME_INVALID;
   }
 
@@ -1933,24 +1938,20 @@ do_chan_user_flags(dbref player, char *name, const char *isyn, int flag,
     silent = 1;
     switch (flag) {
     case CU_QUIET:
-      notify(player,
-             setting ? T("All channels have been muted.")
-                     : T("All channels have been unmuted."));
+      notify(player, setting ? T("All channels have been muted.")
+                             : T("All channels have been unmuted."));
       break;
     case CU_HIDE:
-      notify(player,
-             setting ? T("You hide on all the channels you can.")
-                     : T("You unhide on all channels."));
+      notify(player, setting ? T("You hide on all the channels you can.")
+                             : T("You unhide on all channels."));
       break;
     case CU_GAG:
-      notify(player,
-             setting ? T("All channels have been gagged.")
-                     : T("All channels have been ungagged."));
+      notify(player, setting ? T("All channels have been gagged.")
+                             : T("All channels have been ungagged."));
       break;
     case CU_COMBINE:
-      notify(player,
-             setting ? T("All channels have been combined.")
-                     : T("All channels have been uncombined."));
+      notify(player, setting ? T("All channels have been combined.")
+                             : T("All channels have been uncombined."));
       break;
     }
   } else {
@@ -2037,14 +2038,16 @@ do_chan_user_flags(dbref player, char *name, const char *isyn, int flag,
       if (setting) {
         CUtype(u) |= CU_COMBINE;
         if (!silent)
-          notify_format(player, T("Connect messages on channel <%s> will now "
-                                  "be combined with others."),
+          notify_format(player,
+                        T("Connect messages on channel <%s> will now "
+                          "be combined with others."),
                         ChanName(c));
       } else {
         CUtype(u) &= ~CU_COMBINE;
         if (!silent)
-          notify_format(player, T("Connect messages on channel <%s> will no "
-                                  "longer be combined with others."),
+          notify_format(player,
+                        T("Connect messages on channel <%s> will no "
+                          "longer be combined with others."),
                         ChanName(c));
       }
       break;
@@ -2106,8 +2109,7 @@ do_chan_title(dbref player, const char *name, const char *title)
     return;
   }
   scan = title;
-  WALK_ANSI_STRING(scan)
-  {
+  WALK_ANSI_STRING (scan) {
     /* Stomp newlines and other weird whitespace */
     if ((isspace(*scan) && (*scan != ' ')) || (*scan == BEEP_CHAR)) {
       notify(player, T("Invalid character in title."));
@@ -2175,14 +2177,16 @@ do_channel_list(dbref player, const char *partname, int types)
       safe_str(ChanName(c), shortoutput, &sp);
       continue;
     }
-    if (SUPPORT_HTML)
-      snprintf(numusers, BUFFER_LEN, "%c%cA XCH_CMD=\"@channel/who %s\" "
-                                     "XCH_HINT=\"See who's on this channel "
-                                     "now\"%c%5d%c%c/A%c",
+    if (SUPPORT_HTML) {
+      snprintf(numusers, sizeof numusers,
+               "%c%cA XCH_CMD=\"@channel/who %s\" "
+               "XCH_HINT=\"See who's on this channel "
+               "now\"%c%5d%c%c/A%c",
                TAG_START, MARKUP_HTML, cleanname, TAG_END, ChanNumUsers(c),
                TAG_START, MARKUP_HTML, TAG_END);
-    else
-      sprintf(numusers, "%5d", ChanNumUsers(c));
+    } else {
+      snprintf(numusers, sizeof numusers, "%5d", ChanNumUsers(c));
+    }
     /* Display length is strlen(cleanname), but actual length is
      * strlen(ChanName(c)). There are two different cases:
      * 1. actual length <= 30. No problems.
@@ -2827,11 +2831,14 @@ do_chan_what(dbref player, const char *partname)
   int found = 0;
   char cleanname[BUFFER_LEN];
   char cleanp[CHAN_NAME_LEN];
+  char locks[BUFFER_LEN];
+  char *lp;
 
   strcpy(cleanname, normalize_channel_name(partname));
   for (c = channels; c; c = c->next) {
     strcpy(cleanp, remove_markup(ChanName(c), NULL));
     if (string_prefix(cleanp, cleanname) && Chan_Can_See(c, player)) {
+      lp = locks;
       notify(player, ChanName(c));
       notify_format(player, T("Description: %s"), ChanDesc(c));
       notify_format(player, T("Owner: %s"),
@@ -2848,6 +2855,28 @@ do_chan_what(dbref player, const char *partname)
           T("Recall buffer: %db (%d full lines), with %d lines stored."),
           BufferQSize(ChanBufferQ(c)), bufferq_blocks(ChanBufferQ(c)),
           bufferq_lines(ChanBufferQ(c)));
+
+      // If we have privs, we can see the locks.
+      if (Chan_Can_Decomp(c, player)) {
+        if (ChanModLock(c) != TRUE_BOOLEXP)
+          safe_format(locks, &lp, "\n    mod: %s",
+                      unparse_boolexp(player, ChanModLock(c), UB_MEREF));
+        if (ChanHideLock(c) != TRUE_BOOLEXP)
+          safe_format(locks, &lp, "\n   hide: %s",
+                      unparse_boolexp(player, ChanHideLock(c), UB_MEREF));
+        if (ChanJoinLock(c) != TRUE_BOOLEXP)
+          safe_format(locks, &lp, "\n   join: %s",
+                      unparse_boolexp(player, ChanJoinLock(c), UB_MEREF));
+        if (ChanSpeakLock(c) != TRUE_BOOLEXP)
+          safe_format(locks, &lp, "\n  speak: %s",
+                      unparse_boolexp(player, ChanSpeakLock(c), UB_MEREF));
+        if (ChanSeeLock(c) != TRUE_BOOLEXP)
+          safe_format(locks, &lp, "\n    see: %s",
+                      unparse_boolexp(player, ChanSeeLock(c), UB_MEREF));
+        *lp = '\0';
+        if (strlen(locks) > 1)
+          notify_format(player, T("Locks:%s"), locks);
+      } // if(Chan_Can_Decomp())
       found++;
     }
   }
@@ -2879,8 +2908,7 @@ do_chan_decompile(dbref player, const char *name, int brief)
   for (c = channels; c; c = c->next) {
     strcpy(cleanp, remove_markup(ChanName(c), NULL));
     if (string_prefix(cleanp, cleanname)) {
-      if (!(See_All(player) || Chan_Can_Modify(c, player) ||
-            (ChanCreator(c) == player))) {
+      if (!Chan_Can_Decomp(c, player)) {
         if (Chan_Can_See(c, player)) {
           found++;
           notify_format(player,
@@ -3182,13 +3210,15 @@ chat_player_announce(DESC *desc_player, char *msg, int ungag)
   format.thing = AMBIGUOUS;
   format.attr = "CHATFORMAT";
   format.checkprivs = 0;
-  format.numargs = 6;
+  format.numargs = 8;
   format.targetarg = -1;
   format.args[0] = "@";
   format.args[1] = buff2;
   /* args[2] and args[5] are set in the for loop below */
   format.args[3] = accname;
   format.args[4] = "";
+  format.args[6] = "";
+  format.args[7] = "noisy";
 
   for (d = descriptor_list; d != NULL; d = d->next) {
     viewer = d->player;
@@ -3421,8 +3451,9 @@ FUNCTION(fun_cemit)
     safe_str(T(e_perm), buff, bp);
     return;
   }
-  if (nargs < 3 || !parse_boolean(args[2]))
+  if (nargs < 3 || !parse_boolean(args[2])) {
     flags |= PEMIT_SILENT;
+  }
   do_cemit(executor, args[0], args[1], flags);
 }
 
@@ -3547,8 +3578,9 @@ FUNCTION(fun_crecall)
 COMMAND(cmd_cemit)
 {
   int flags = SILENT_OR_NOISY(sw, !options.noisy_cemit);
-  if (!strcmp(cmd->name, "@NSCEMIT") && Can_Nspemit(executor))
+  if (!strcmp(cmd->name, "@NSCEMIT") && Can_Nspemit(executor)) {
     flags |= PEMIT_SPOOF;
+  }
 
   do_cemit(executor, arg_left, arg_right, flags);
 }
@@ -3784,7 +3816,7 @@ channel_send(CHAN *channel, dbref player, int flags, const char *origmessage)
 
       /* Should we skip buffering this message? */
       if (parse_boolean(
-            mogrify(mogrifier, "MOGRIFY`NOBUFFER", player, 6, argv, ""))) {
+            mogrify(mogrifier, "MOGRIFY`NOBUFFER", player, 5, argv, ""))) {
         skip_buffer = 1;
       }
 
@@ -3793,31 +3825,37 @@ channel_send(CHAN *channel, dbref player, int flags, const char *origmessage)
       argv[3] = message;
       argv[4] = title;
       argv[5] = playername;
+      argv[6] = speechtext;
+      if (flags & CB_QUIET) {
+        argv[7] = "silent";
+      } else {
+        argv[7] = "noisy";
+      }
 
       argv[0] = channame;
       snprintf(
         channame, BUFFER_LEN, "%s",
-        mogrify(mogrifier, "MOGRIFY`CHANNAME", player, 6, argv, channame));
+        mogrify(mogrifier, "MOGRIFY`CHANNAME", player, 8, argv, channame));
 
       argv[0] = title;
       snprintf(title, BUFFER_LEN, "%s",
-               mogrify(mogrifier, "MOGRIFY`TITLE", player, 6, argv, title));
+               mogrify(mogrifier, "MOGRIFY`TITLE", player, 8, argv, title));
 
       argv[0] = playername;
       snprintf(
         playername, BUFFER_LEN, "%s",
-        mogrify(mogrifier, "MOGRIFY`PLAYERNAME", player, 6, argv, playername));
+        mogrify(mogrifier, "MOGRIFY`PLAYERNAME", player, 8, argv, playername));
 
       if (flags & CB_SPEECH) {
         argv[0] = speechtext;
         snprintf(speechtext, BUFFER_LEN, "%s",
-                 mogrify(mogrifier, "MOGRIFY`SPEECHTEXT", player, 6, argv,
+                 mogrify(mogrifier, "MOGRIFY`SPEECHTEXT", player, 8, argv,
                          speechtext));
       }
 
       argv[0] = message;
       snprintf(message, BUFFER_LEN, "%s",
-               mogrify(mogrifier, "MOGRIFY`MESSAGE", player, 6, argv, message));
+               mogrify(mogrifier, "MOGRIFY`MESSAGE", player, 8, argv, message));
     }
   }
 
@@ -3855,8 +3893,15 @@ channel_send(CHAN *channel, dbref player, int flags, const char *origmessage)
   *bp = '\0';
 
   if (flags & CB_PRESENCE) {
-    snprintf(title, BUFFER_LEN, "%s", message);
-    snprintf(message, BUFFER_LEN, "%s %s", playername, title);
+    /* This is a 'connect/disconnected' message. For mogrify purposes, thanks to
+     * backwards compat, there is no title, and message is "playername has
+     * connected."
+     *
+     * So this is ugly. 'title' is used a temp buffer for redoing message.
+     */
+    int ignoreme __attribute__((__unused__));
+    ignoreme = snprintf(title, BUFFER_LEN, "%s", message);
+    ignoreme = snprintf(message, BUFFER_LEN, "%s %s", playername, title);
     title[0] = '\0';
   }
 
@@ -3867,8 +3912,15 @@ channel_send(CHAN *channel, dbref player, int flags, const char *origmessage)
     argv[3] = playername;
     argv[4] = title;
     argv[5] = buff;
+    argv[6] = speechtext;
+    if (flags & CB_QUIET) {
+      argv[7] = "silent";
+    } else {
+      argv[7] = "noisy";
+    }
+
     snprintf(buff, BUFFER_LEN, "%s",
-             mogrify(mogrifier, "MOGRIFY`FORMAT", player, 6, argv, buff));
+             mogrify(mogrifier, "MOGRIFY`FORMAT", player, 8, argv, buff));
   }
 
   if (Channel_Interact(channel)) {
@@ -3882,7 +3934,7 @@ channel_send(CHAN *channel, dbref player, int flags, const char *origmessage)
   format.thing = AMBIGUOUS;
   format.attr = "CHATFORMAT";
   format.checkprivs = 0;
-  format.numargs = 6;
+  format.numargs = 8;
   format.targetarg = -1;
   format.args[0] = (char *) ctype;
   format.args[1] = ChanName(channel);
@@ -3890,6 +3942,12 @@ channel_send(CHAN *channel, dbref player, int flags, const char *origmessage)
   format.args[3] = playername;
   format.args[4] = title;
   format.args[5] = buff;
+  format.args[6] = speechtext;
+  if (flags & CB_QUIET) {
+    format.args[7] = "silent";
+  } else {
+    format.args[7] = "noisy";
+  }
 
   for (u = ChanUsers(channel); u; u = u->next) {
     current = CUdbref(u);
@@ -4155,6 +4213,8 @@ parse_chat_alias(dbref player, char *command)
   ATTR *a;
   CHAN *c;
   bool chat = 0;
+  char abuff[BUFFER_LEN];
+  int ignoreme __attribute__((__unused__));
 
   alias = bp = command;
   while (*bp && !isspace((unsigned char) *bp))
@@ -4169,9 +4229,9 @@ parse_chat_alias(dbref player, char *command)
   while (*message && isspace((unsigned char) *message))
     message++;
 
-  strcpy(channame, alias);
-  upcasestr(channame);
-  a = atr_get(player, tprintf("CHANALIAS`%s", channame));
+  ignoreme = snprintf(abuff, sizeof abuff, "CHANALIAS`%s",
+                      strupper_r(alias, channame, sizeof channame));
+  a = atr_get(player, abuff);
   if (!a || !(av = safe_atr_value(a, "chanalias"))) {
     /* Not an alias */
     *bp = save;
@@ -4308,8 +4368,8 @@ COMMAND(cmd_delcom)
   channame = safe_atr_value(a, "delcom");
 
   atr_clr(executor, buff, GOD);
-  matches =
-    atr_iter_get(GOD, executor, "CHANALIAS`*", 0, 0, delcom_helper, channame);
+  matches = atr_iter_get(GOD, executor, "CHANALIAS`*", AIG_NONE, delcom_helper,
+                         channame);
   if (!matches) {
     channel_leave_self(executor, channame);
   } else {
@@ -4344,7 +4404,7 @@ comlist_helper(dbref player __attribute__((__unused__)), dbref thing,
   if (!(cu = onchannel(thing, c)))
     return 0;
 
-  mush_strncpy(buff, strlower(AL_NAME(atr)), BUFFER_LEN);
+  strlower_r(AL_NAME(atr), buff, sizeof buff);
   bp = strchr(buff, '`');
   if (!bp)
     return 0;
@@ -4373,7 +4433,7 @@ COMMAND(cmd_comlist)
 
   notify_format(executor, "%-18s %-30s %-8s %s", T("Alias"), T("Channel"),
                 T("Status"), T("Title"));
-  atr_iter_get(GOD, executor, "CHANALIAS`*", 0, 0, comlist_helper, NULL);
+  atr_iter_get(GOD, executor, "CHANALIAS`*", AIG_NONE, comlist_helper, NULL);
   notify(executor, T("-- End of comlist --"));
 }
 

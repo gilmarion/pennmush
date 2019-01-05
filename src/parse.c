@@ -39,6 +39,7 @@
 #include "notify.h"
 #include "strtree.h"
 #include "strutil.h"
+#include "tests.h"
 
 extern char *absp[], *obj[], *poss[], *subj[]; /* fundb.c */
 int global_fun_invocations;
@@ -46,7 +47,6 @@ int global_fun_recursions;
 /* extern int re_subpatterns; */
 /* extern int *re_offsets; */
 /* extern ansi_string *re_from; */
-extern sig_atomic_t cpu_time_limit_hit;
 extern int cpu_limit_warning_sent;
 
 /** Structure for storing DEBUG output in a linked list */
@@ -270,6 +270,21 @@ is_boolean(char const *str)
     return 1;
 }
 
+TEST_GROUP(is_boolean)
+{
+  // TEST is_boolean REQUIRES is_integer
+  int saved = TINY_BOOLEANS;
+  options.tiny_booleans = 1;
+  TEST("is_boolean.tiny.1", is_boolean("0") == 1);
+  TEST("is_boolean.tiny.2", is_boolean("") == 0);
+  TEST("is_boolean.tiny.3", is_boolean("foo") == 0);
+  options.tiny_booleans = 0;
+  TEST("is_boolean.penn.1", is_boolean("0") == 1);
+  TEST("is_boolean.penn.2", is_boolean("") == 1);
+  TEST("is_boolean.penn.3", is_boolean("foo") == 1);
+  options.tiny_booleans = saved;
+}
+
 /** Is a string a dbref?
  * A dbref is a string starting with a #, optionally followed by a -,
  * and then followed by at least one digit, and nothing else.
@@ -280,14 +295,32 @@ is_boolean(char const *str)
 bool
 is_dbref(char const *str)
 {
-  if (!str || (*str != NUMBER_TOKEN) || !*(str + 1))
+  if (!str || (*str != NUMBER_TOKEN) || !*(str + 1)) {
     return 0;
-  if (*(str + 1) == '-') {
-    str++;
   }
-  for (str++; isdigit(*str); str++) {
+  str += 1;
+  if (*str == '-') {
+    str += 1;
+  }
+  if (!*str) {
+    return 0;
+  }
+  for (; isdigit(*str); str += 1) {
   }
   return !*str;
+}
+
+TEST_GROUP(is_dbref)
+{
+  TEST("is_dbref.1", is_dbref("") == 0);
+  TEST("is_dbref.2", is_dbref("foo") == 0);
+  TEST("is_dbref.3", is_dbref("#foo") == 0);
+  TEST("is_dbref.4", is_dbref("#-1") == 1);
+  TEST("is_dbref.5", is_dbref("#1234") == 1);
+  TEST("is_dbref.6", is_dbref("#12AB") == 0);
+  TEST("is_dbref.7", is_dbref("#") == 0);
+  TEST("is_dbref.8", is_dbref("#-") == 0);
+  TEST("is_dbref.9", is_dbref("#-A") == 0);
 }
 
 /** Is a string an objid?
@@ -304,21 +337,27 @@ is_dbref(char const *str)
 bool
 is_objid(char const *str)
 {
-  static pcre *re = NULL;
-  static pcre_extra *extra = NULL;
-  const char *errptr;
-  int erroffset;
-  char *val;
+  static pcre2_code *re = NULL;
+  static pcre2_match_data *md = NULL;
+  const PCRE2_UCHAR *val;
   size_t vlen;
 
-  if (!str)
+  if (!str) {
     return 0;
-  if (!re) {
-    re = pcre_compile("^#-?\\d+(?::\\d+)?$", 0, &errptr, &erroffset, NULL);
-    extra = pcre_study(re, pcre_study_flags, &errptr);
   }
-  val = remove_markup((const char *) str, &vlen);
-  return pcre_exec(re, extra, val, vlen - 1, 0, 0, NULL, 0) >= 0;
+  if (!re) {
+    int errcode;
+    PCRE2_SIZE erroffset;
+    re = pcre2_compile((const PCRE2_UCHAR *) "^#-?\\d+(?::\\d+)?$",
+                       PCRE2_ZERO_TERMINATED,
+                       re_compile_flags | PCRE2_NO_UTF_CHECK, &errcode,
+                       &erroffset, re_compile_ctx);
+    pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+    md = pcre2_match_data_create_from_pattern(re, NULL);
+  }
+  val = (const PCRE2_UCHAR *) remove_markup((const char *) str, &vlen);
+  return pcre2_match(re, val, vlen - 1, 0, re_match_flags, md, re_match_ctx) >=
+         0;
 }
 
 /** Is string an integer?
@@ -349,6 +388,32 @@ is_integer(char const *str)
   if (errno == ERANGE || *end != '\0')
     return 0;
   return 1;
+}
+
+TEST_GROUP(is_integer)
+{
+  int saved_math = TINY_MATH;
+  int saved_null = NULL_EQ_ZERO;
+  options.tiny_math = 1;
+  TEST("is_integer.tiny.1", is_integer("") == 1);
+  TEST("is_integer.tiny.2", is_integer("foo") == 1);
+  TEST("is_integer.tiny.3", is_integer("5") == 1);
+  TEST("is_integer.tiny.4", is_integer(NULL) == 1);
+  options.tiny_math = 0;
+  TEST("is_integer.penn.1", is_integer("foo") == 0);
+  TEST("is_integer.penn.2", is_integer("5") == 1);
+  TEST("is_integer.penn.3", is_integer("  12") == 1);
+  TEST("is_integer.penn.4", is_integer(NULL) == 0);
+  TEST("is_integer.penn.5", is_integer("-5") == 1);
+  TEST("is_integer.penn.6", is_integer("2147483647") == 1); // INT_MAX
+  TEST("is_integer.penn.7", is_integer("2147483648") == 0); // INT_MAX + 1
+  TEST("is_integer.penn.8", is_integer("12foo") == 0);
+  options.null_eq_zero = 1;
+  TEST("is_integer.penn.9", is_integer("") == 1);
+  options.null_eq_zero = 0;
+  TEST("is_integer.penn.10", is_integer("") == 0);
+  options.tiny_math = saved_math;
+  options.null_eq_zero = saved_null;
 }
 
 /** Is string an unsigned integer?
@@ -382,6 +447,33 @@ is_uinteger(char const *str)
   if (errno == ERANGE || *end != '\0')
     return 0;
   return 1;
+}
+
+TEST_GROUP(is_uinteger)
+{
+  int saved_math = TINY_MATH;
+  int saved_null = NULL_EQ_ZERO;
+  options.tiny_math = 1;
+  TEST("is_uinteger.tiny.1", is_uinteger("") == 1);
+  TEST("is_uinteger.tiny.2", is_uinteger("foo") == 1);
+  TEST("is_uinteger.tiny.3", is_uinteger("5") == 1);
+  TEST("is_uinteger.tiny.4", is_uinteger(NULL) == 1);
+  TEST("is_uinteger.tiny.5", is_uinteger("-5") == 1);
+  options.tiny_math = 0;
+  TEST("is_uinteger.penn.1", is_uinteger("foo") == 0);
+  TEST("is_uinteger.penn.2", is_uinteger("5") == 1);
+  TEST("is_uinteger.penn.3", is_uinteger("  12") == 1);
+  TEST("is_uinteger.penn.4", is_uinteger(NULL) == 0);
+  TEST("is_uinteger.penn.5", is_uinteger("-5") == 0);
+  TEST("is_uinteger.penn.6", is_uinteger("4294967295") == 1); // UINT_MAX
+  TEST("is_uinteger.penn.7", is_uinteger("4294967296") == 0); // UINT_MAX + 1
+  TEST("is_uinteger.penn.8", is_uinteger("12foo") == 0);
+  options.null_eq_zero = 1;
+  TEST("is_uinteger.penn.9", is_uinteger("") == 1);
+  options.null_eq_zero = 0;
+  TEST("is_uinteger.penn.10", is_uinteger("") == 0);
+  options.tiny_math = saved_math;
+  options.null_eq_zero = saved_null;
 }
 
 /** Is string really an unsigned integer?
@@ -473,6 +565,26 @@ is_strict_integer(char const *str)
   return end > str;
 }
 
+/** Is string an int64_t by the strict definition?
+ * A strict integer is a non-null string that passes parse_int64.
+ * \param str string to check.
+ * \retval 1 string is a strict integer.
+ * \retval 0 string is not a strict integer.
+ */
+bool
+is_strict_int64(char const *str)
+{
+  char *end;
+  if (!str)
+    return 0;
+  errno = 0;
+  parse_int64(str, &end, 10);
+  if (errno == ERANGE || *end != '\0') {
+    return 0;
+  }
+  return end > str;
+}
+
 /** Does a string contain a list of space-separated valid signed integers?
  * Must contain at least one int. For internal use; ignores TINY_MATH.
  * \param str string to check
@@ -522,6 +634,31 @@ is_number(char const *str)
   return is_strict_number(str);
 }
 
+TEST_GROUP(is_number)
+{
+  int saved_tiny = TINY_MATH;
+  int saved_null = NULL_EQ_ZERO;
+  options.tiny_math = 1;
+  TEST("is_number.tiny.1", is_number("") == 1);
+  TEST("is_number.tiny.2", is_number("foo") == 1);
+  TEST("is_number.tiny.3", is_number("5") == 1);
+  TEST("is_number.tiny.4", is_number(NULL) == 1);
+  TEST("is_number.tiny.5", is_number("-5.5") == 1);
+  options.tiny_math = 0;
+  TEST("is_number.penn.1", is_number("foo") == 0);
+  TEST("is_number.penn.2", is_number("5") == 1);
+  TEST("is_number.penn.3", is_number("  12.05") == 1);
+  TEST("is_number.penn.5", is_number("-5") == 1);
+  TEST("is_number.penn.7", is_number("2e6") == 1);
+  TEST("is_number.penn.8", is_number("12foo") == 0);
+  options.null_eq_zero = 1;
+  TEST("is_number.penn.9", is_number("") == 1);
+  options.null_eq_zero = 0;
+  TEST("is_number.penn.10", is_number("") == 0);
+  options.tiny_math = saved_tiny;
+  options.null_eq_zero = saved_null;
+}
+
 /** Convert a string containing a signed integer into an int.
  * Does not do any format checking. Invalid strings will return 0.
  * Use this instead of strtol() when storing to an int to avoid problems
@@ -567,24 +704,56 @@ parse_int(const char *s, char **end, int base)
 int32_t
 parse_int32(const char *s, char **end, int base)
 {
-
-  if (sizeof(int) == 4)
+  if (sizeof(int) == 4) {
     return parse_int(s, end, base);
+  } else {
+    /* This block will probably never happen, but just in case somebody's
+     * trying to use Penn on a really odd hardware... */
+    long n = strtol(s, end, base);
+    if (n < INT32_MIN) {
+      errno = ERANGE;
+      return INT32_MIN;
+    } else if (n > INT32_MAX) {
+      errno = ERANGE;
+      return INT32_MAX;
+    } else {
+      return n;
+    }
+  }
+}
 
-#if defined(SCNd32)
-  /* This won't do overflow checking, which is why it isn't first */
-  int32_t val;
-
-  /* Unsupported base in this mode */
-  if (base != 10)
-    return 0;
-
-  if (sscanf(s, "%" SCNd32, &val) != 1)
-    return 0;
-  else
-    return val;
+/** Convert a string containing an integer into an int64_t.
+ * Does not do any format checking. Invalid strings will return 0.
+ * \param s The string to convert
+ * \param end pointer to store the end of the parsed part of the string in
+ * if not NULL.
+ * \param base the base to convert from.
+ * \return the number, or INT64_MIN on underflow, INT64_MAX on overflow,
+ * with errno set to ERANGE.
+ */
+int64_t
+parse_int64(const char *s, char **end, int base)
+{
+#if defined(WIN32)
+  return _strtoi64(s, end, base);
 #else
-  return 0;
+  if (sizeof(long) == 8) {
+    return strtol(s, end, base);
+  } else if (sizeof(long long) == 8) {
+    return strtoll(s, end, base);
+  } else {
+    /* long long greater than 64 bits? */
+    long long val = strtoll(s, end, base);
+    if (val > INT64_MAX) {
+      errno = ERANGE;
+      return INT64_MAX;
+    } else if (val < INT64_MIN) {
+      errno = ERANGE;
+      return INT64_MIN;
+    } else {
+      return val;
+    }
+  }
 #endif
 }
 
@@ -595,8 +764,7 @@ parse_int32(const char *s, char **end, int base)
  * \param s The string to convert
  * \param end pointer to store the first invalid char at, or NULL
  * \param base base for conversion
- * \return the number, or UINT_MAX on overflow
- * with errno set to ERANGE.
+ * \return the number, or UINT_MAX on overflow with errno set to ERANGE.
  */
 unsigned int
 parse_uint(const char *s, char **end, int base)
@@ -605,9 +773,9 @@ parse_uint(const char *s, char **end, int base)
 
   x = strtoul(s, end, base);
 
-  if (sizeof(int) == sizeof(long))
+  if (sizeof(unsigned int) == sizeof(unsigned long)) {
     return x;
-  else {
+  } else {
     /* These checks are only meaningful on 64-bit systems */
     if (x > UINT_MAX) {
       errno = ERANGE;
@@ -623,37 +791,25 @@ parse_uint(const char *s, char **end, int base)
  * \param end pointer to store the end of the parsed part of the string in
  * if not NULL.
  * \param base the base to convert from.
- * \return the number, or UINT32_MIN on underflow, UINT32_MAX on overflow,
- * with errno set to ERANGE.
+ * \return the number, or UINT32_MAX on overflow, with errno set to ERANGE.
  */
 uint32_t
 parse_uint32(const char *s, char **end, int base)
 {
+  unsigned long x;
 
-  if (sizeof(int) == 4)
-    return parse_uint(s, end, base);
+  x = strtoul(s, end, base);
 
-#if defined(SCNu32)
-  /* This won't do overflow checking, which is why it isn't first */
-  const char *fmt;
-  uint32_t val;
-
-  if (base == 10)
-    fmt = "%" SCNu32;
-  else if (base == 8)
-    fmt = "%" SCNo32;
-  else if (base == 16)
-    fmt = "%" SCNx32;
-  else
-    return 0;
-
-  if (sscanf(s, fmt, &val) != 1)
-    return 0;
-  else
-    return val;
-#else
-  return 0;
-#endif
+  if (sizeof(unsigned long) == 4) {
+    return x;
+  } else {
+    if (x > UINT32_MAX) {
+      errno = ERANGE;
+      return UINT32_MAX;
+    } else {
+      return x;
+    }
+  }
 }
 
 /** Convert a string containing an unsigned integer into an uint64_t.
@@ -662,51 +818,30 @@ parse_uint32(const char *s, char **end, int base)
  * \param end pointer to store the end of the parsed part of the string in
  * if not NULL.
  * \param base the base to convert from.
- * \return the number, or UINT64_MIN on underflow, UINT64_MAX on overflow,
- * with errno set to ERANGE.
+ * \return the number, or UINT64_MAX on overflow, with errno set to ERANGE.
  */
 uint64_t
 parse_uint64(const char *s, char **end, int base)
 {
-  const char *fmt = NULL;
-  uint64_t val;
-
-  if (sizeof(long) == 8)
-    return strtoul(s, end, base);
-
 #if defined(WIN32)
-  /* This won't do overflow checking, which is why it isn't first */
-
-  if (base == 10)
-    fmt = "%I64x";
-  else if (base == 8)
-    fmt = "%I64o";
-  else if (base == 16)
-    fmt = "%64x";
-  else
-    return 0;  
-#elif defined(SCNu64)
-  /* This won't do overflow checking, which is why it isn't first */
-
-  if (base == 10)
-    fmt = "%" SCNu64;
-  else if (base == 8)
-    fmt = "%" SCNo64;
-  else if (base == 16)
-    fmt = "%" SCNx64;
-  else
-    return 0;
+  return _strtoui64(s, end, base);
+#else
+  if (sizeof(unsigned long) == 8) {
+    return strtoul(s, end, base);
+  } else if (sizeof(unsigned long long) == 8) {
+    return strtoull(s, end, base);
+  } else {
+    /* unsigned long long greater than 64 bits? */
+    unsigned long long val = strtoull(s, end, base);
+    if (val > UINT64_MAX) {
+      errno = ERANGE;
+      return UINT64_MAX;
+    } else {
+      return val;
+    }
+  }
 #endif
-
-  if (!fmt)
-    return 0;
-  
-  if (sscanf(s, fmt, &val) != 1)
-    return 0;
-  else
-    return val;
 }
-
 
 /** PE_REGS: Named Q-registers. We have two strtrees: One for names,
  * one for values.
@@ -946,6 +1081,24 @@ pe_regs_restore(NEW_PE_INFO *pe_info, PE_REGS *pe_regs)
     pval = pval->next;                                                         \
   } while (pval)
 
+/** Is the given key a named register (not A-Z or 0-9)?
+ */
+bool
+is_named_register(const char *key)
+{
+  if (!key || !*key)
+    return 1;
+
+  if (key[1] != '\0')
+    return 1;
+
+  if ((key[0] >= 'a' && key[0] <= 'z') || (key[0] >= 'A' && key[0] <= 'Z') ||
+      (key[0] >= '0' && key[0] <= '9'))
+    return 0;
+
+  return 1;
+}
+
 /** Set a string value in a PE_REGS structure.
  *
  * pe_regs_set is authoritative: it ignores flags set on the PE_REGS,
@@ -967,8 +1120,7 @@ pe_regs_set_if(PE_REGS *pe_regs, int type, const char *lckey, const char *val,
   PE_REG_VAL *pval = pe_regs->vals;
   char key[PE_KEY_LEN];
   static const char noval[] = "";
-  mush_strncpy(key, lckey, PE_KEY_LEN);
-  upcasestr(key);
+  strupper_r(lckey, key, sizeof key);
   FIND_PVAL(pval, key, type);
   if (!(type & PE_REGS_NOCOPY)) {
     if (!val || !val[0]) {
@@ -990,8 +1142,7 @@ pe_regs_set_if(PE_REGS *pe_regs, int type, const char *lckey, const char *val,
     pe_regs->vals = pval;
     pe_regs->count++;
     if (type & PE_REGS_Q) {
-      if (!((key[1] == '\0') && ((key[0] >= 'A' && key[0] <= 'Z') ||
-                                 (key[0] >= '0' && key[0] <= '9')))) {
+      if (is_named_register(key)) {
         pe_regs->qcount++;
       }
     }
@@ -1024,8 +1175,7 @@ pe_regs_set_int_if(PE_REGS *pe_regs, int type, const char *lckey, int val,
 {
   PE_REG_VAL *pval = pe_regs->vals;
   char key[PE_KEY_LEN];
-  mush_strncpy(key, lckey, PE_KEY_LEN);
-  upcasestr(key);
+  strupper_r(lckey, key, sizeof key);
   FIND_PVAL(pval, key, type);
   if (pval) {
     if (!override)
@@ -1040,8 +1190,7 @@ pe_regs_set_int_if(PE_REGS *pe_regs, int type, const char *lckey, int val,
     pe_regs->vals = pval;
     pe_regs->count++;
     if (type & PE_REGS_Q) {
-      if (!((key[1] == '\0') && ((key[0] >= 'A' && key[0] <= 'Z') ||
-                                 (key[0] >= '0' && key[0] <= '9')))) {
+      if (is_named_register(key)) {
         pe_regs->qcount++;
       }
     }
@@ -1055,8 +1204,7 @@ pe_regs_get(PE_REGS *pe_regs, int type, const char *lckey)
 {
   PE_REG_VAL *pval = pe_regs->vals;
   char key[PE_KEY_LEN];
-  mush_strncpy(key, lckey, PE_KEY_LEN);
-  upcasestr(key);
+  strupper_r(lckey, key, sizeof key);
   FIND_PVAL(pval, key, type);
   if (!pval)
     return NULL;
@@ -1079,8 +1227,7 @@ pe_regs_get_int(PE_REGS *pe_regs, int type, const char *lckey)
 {
   PE_REG_VAL *pval = pe_regs->vals;
   char key[PE_KEY_LEN];
-  mush_strncpy(key, lckey, PE_KEY_LEN);
-  upcasestr(key);
+  strupper_r(lckey, key, sizeof key);
   FIND_PVAL(pval, key, type);
   if (!pval)
     return 0;
@@ -1158,25 +1305,26 @@ pe_regs_copystack(PE_REGS *new_regs, PE_REGS *pe_regs, int copytypes,
       if (val->type & copytypes) {
         if (val->type & (PE_REGS_SWITCH | PE_REGS_ITER)) {
           /* It is t<num> or n<num>. Bump it up as necessary. */
-          sscanf(val->name, "%c%d", &itype, &inum);
-          inum += (val->type & PE_REGS_SWITCH) ? smax : imax;
-          if (*(val->name) == 'T') {
-            if (val->type & PE_REGS_SWITCH) {
-              if (inum >= scount)
-                scount = inum + 1;
-            } else {
-              if (inum >= icount)
-                icount = inum + 1;
+          if (sscanf(val->name, "%c%d", &itype, &inum) == 2) {
+            inum += (val->type & PE_REGS_SWITCH) ? smax : imax;
+            if (*(val->name) == 'T') {
+              if (val->type & PE_REGS_SWITCH) {
+                if (inum >= scount)
+                  scount = inum + 1;
+              } else {
+                if (inum >= icount)
+                  icount = inum + 1;
+              }
             }
-          }
-          if (inum < MAX_ITERS) {
-            snprintf(numbuff, 10, "%c%d", itype, inum);
-            if (val->type & PE_REGS_STR) {
-              pe_regs_set(new_regs, val->type & andflags, numbuff,
-                          val->val.sval);
-            } else {
-              pe_regs_set_int(new_regs, val->type & andflags, numbuff,
-                              val->val.ival);
+            if (inum >= 0 && inum < MAX_ITERS) {
+              snprintf(numbuff, sizeof numbuff, "%c%d", itype, inum);
+              if (val->type & PE_REGS_STR) {
+                pe_regs_set(new_regs, val->type & andflags, numbuff,
+                            val->val.sval);
+              } else {
+                pe_regs_set_int(new_regs, val->type & andflags, numbuff,
+                                val->val.ival);
+              }
             }
           }
         } else {
@@ -1255,10 +1403,30 @@ int
 pi_regs_valid_key(const char *lckey)
 {
   char key[PE_KEY_LEN];
-  mush_strncpy(key, lckey, PE_KEY_LEN);
-  upcasestr(key);
+  strupper_r(lckey, key, sizeof key);
   return (strlen(key) <= PE_KEY_LEN && *key && (key[0] != '-' || key[1]) &&
           good_atr_name(key));
+}
+
+extern char atr_name_table[UCHAR_MAX + 1];
+
+void
+pi_regs_normalize_key(char *lckey)
+{
+  if (!lckey || !*lckey)
+    return;
+  if (lckey[0] == '-' && !lckey[1]) {
+    /* 1-character key that is only - ? */
+    lckey[0] = '?';
+  }
+
+  for (; lckey && *lckey; lckey++) {
+    if (islower(*lckey))
+      *lckey = toupper(*lckey);
+    if (!atr_name_table[*lckey]) {
+      *lckey = '?';
+    }
+  }
 }
 
 /** Set a q-register value in the appropriate PE_REGS context.
@@ -1286,7 +1454,8 @@ pi_regs_setq(NEW_PE_INFO *pe_info, const char *key, const char *val)
     pe_regs = pe_regs->prev;
   }
   /* Single-character keys ignore attrcount. */
-  if ((count >= MAX_NAMED_QREGS) && key[1]) {
+  if ((count >= MAX_NAMED_QREGS) && is_named_register(key) &&
+      !PE_Getq(pe_info, key)) {
     return 0;
   }
   /* Find the p_regs to setq() in. */
@@ -1338,115 +1507,106 @@ pi_regs_getq(NEW_PE_INFO *pe_info, const char *key)
 
 /* REGEXPS */
 void
-pe_regs_set_rx_context(PE_REGS *pe_regs, int pe_reg_flags,
-                       struct real_pcre *re_code, int *re_offsets,
-                       int re_subpatterns, const char *re_from)
+pe_regs_set_rx_context(PE_REGS *pe_regs, int pe_reg_flags, pcre2_code *re_code,
+                       pcre2_match_data *md, int re_subpatterns)
 {
-  int i;
-  unsigned char *entry, *nametable;
-  int entrysize;
-  int namecount;
-  int num;
+  uint32_t i, namecount, entrysize;
+  PCRE2_SPTR nametable;
   char buff[BUFFER_LEN];
 
-  if (!re_from)
+  if (re_subpatterns < 0) {
     return;
-  if (re_subpatterns < 0)
-    return;
+  }
 
-  if (!pe_reg_flags)
+  if (!pe_reg_flags) {
     pe_reg_flags = PE_REGS_REGEXP;
+  }
 
   /* We assume every captured pattern is used. */
   /* Copy all the numbered captures over */
-  for (i = 0; i < re_subpatterns && i < 1000; i++) {
+  for (i = 0; i < (uint32_t) re_subpatterns && i < 1000; i++) {
+    PCRE2_SIZE blen = BUFFER_LEN;
     buff[0] = '\0';
-    pcre_copy_substring(re_from, re_offsets, re_subpatterns, i, buff,
-                        BUFFER_LEN);
+    pcre2_substring_copy_bynumber(md, i, (PCRE2_UCHAR *) buff, &blen);
     pe_regs_set(pe_regs, pe_reg_flags, pe_regs_intname(i), buff);
   }
-  /* Copy all the named captures over. This code is ganked from
-   * pcre_get_stringnumber */
-  /* Check to see if we have any named substrings, first. */
-  if (pcre_fullinfo(re_code, NULL, PCRE_INFO_NAMECOUNT, &namecount) != 0) {
+
+  /* Copy all the named captures over. */
+  if (pcre2_pattern_info(re_code, PCRE2_INFO_NAMECOUNT, &namecount) != 0) {
     return;
   }
-  if (namecount <= 0)
+  if (namecount == 0) {
     return;
+  }
+  if (pcre2_pattern_info(re_code, PCRE2_INFO_NAMEENTRYSIZE, &entrysize) != 0) {
+    return;
+  }
+  if (pcre2_pattern_info(re_code, PCRE2_INFO_NAMETABLE, &nametable) != 0) {
+    return;
+  }
 
-  /* Fetch entry size and nametable */
-  if (pcre_fullinfo(re_code, NULL, PCRE_INFO_NAMEENTRYSIZE, &entrysize) != 0)
-    return;
-  if (pcre_fullinfo(re_code, NULL, PCRE_INFO_NAMETABLE, &nametable) != 0)
-    return;
   for (i = 0; i < namecount; i++) {
-    entry = nametable + (entrysize * i);
-    num = (entry[0] << 8) + entry[1];
+    PCRE2_SIZE blen = BUFFER_LEN;
+    PCRE2_SPTR entry = nametable + (entrysize * i);
+
     buff[0] = '\0';
-    pcre_copy_substring(re_from, re_offsets, re_subpatterns, num, buff,
-                        BUFFER_LEN);
-    /* we don't need to do this, as it's done in the 'numbered captures'
-     * for loop above.
-     pe_regs_set(pe_regs, pe_reg_flags, unparse_integer(num), buff);
-     */
-    pe_regs_set(pe_regs, pe_reg_flags, (char *) entry + 2, buff);
+    if (pcre2_substring_copy_byname(md, entry + 2, (PCRE2_UCHAR *) buff,
+                                    &blen) == 0) {
+      pe_regs_set(pe_regs, pe_reg_flags, (char *) entry + 2, buff);
+    }
   }
 }
 
 void
 pe_regs_set_rx_context_ansi(PE_REGS *pe_regs, int pe_reg_flags,
-                            struct real_pcre *re_code, int *re_offsets,
+                            pcre2_code *re_code, pcre2_match_data *md,
                             int re_subpatterns, struct _ansi_string *re_from)
 {
-  int i;
-  unsigned char *entry, *nametable;
-  int entrysize;
-  int namecount;
+  uint32_t i, namecount, entrysize;
+  PCRE2_SPTR nametable;
   int num;
   char buff[BUFFER_LEN], *bp;
 
-  if (!re_from)
+  if (!re_from) {
     return;
-  if (re_subpatterns < 0)
+  }
+  if (re_subpatterns < 0) {
     return;
+  }
 
-  if (!pe_reg_flags)
+  if (!pe_reg_flags) {
     pe_reg_flags = PE_REGS_REGEXP;
+  }
 
   /* We assume every captured pattern is used. */
   /* Copy all the numbered captures over */
-  for (i = 0; i < re_subpatterns && i < 1000; i++) {
+  for (i = 0; i < (uint32_t) re_subpatterns && i < 1000; i++) {
     bp = buff;
-    ansi_pcre_copy_substring(re_from, re_offsets, re_subpatterns, i, 1, buff,
-                             &bp);
+    ansi_pcre_copy_substring(re_from, md, re_subpatterns, i, 1, buff, &bp);
     *bp = '\0';
     pe_regs_set(pe_regs, pe_reg_flags, pe_regs_intname(i), buff);
   }
-  /* Copy all the named captures over. This code is ganked from
-   * pcre_get_stringnumber */
-  /* Check to see if we have any named substrings, first. */
-  if (pcre_fullinfo(re_code, NULL, PCRE_INFO_NAMECOUNT, &namecount) != 0) {
+
+  /* Copy all the named captures over. */
+  if (pcre2_pattern_info(re_code, PCRE2_INFO_NAMECOUNT, &namecount) != 0) {
     return;
   }
-  if (namecount <= 0)
+  if (namecount == 0) {
     return;
+  }
+  if (pcre2_pattern_info(re_code, PCRE2_INFO_NAMEENTRYSIZE, &entrysize) != 0) {
+    return;
+  }
+  if (pcre2_pattern_info(re_code, PCRE2_INFO_NAMETABLE, &nametable) != 0) {
+    return;
+  }
 
-  /* Fetch entry size and nametable */
-  if (pcre_fullinfo(re_code, NULL, PCRE_INFO_NAMEENTRYSIZE, &entrysize) != 0)
-    return;
-  if (pcre_fullinfo(re_code, NULL, PCRE_INFO_NAMETABLE, &nametable) != 0)
-    return;
   for (i = 0; i < namecount; i++) {
-    entry = nametable + (entrysize * i);
+    PCRE2_SPTR entry = nametable + (entrysize * i);
     num = (entry[0] << 8) + entry[1];
     bp = buff;
-    ansi_pcre_copy_substring(re_from, re_offsets, re_subpatterns, num, 1, buff,
-                             &bp);
+    ansi_pcre_copy_substring(re_from, md, re_subpatterns, num, 1, buff, &bp);
     *bp = '\0';
-    /* we don't need to do this, as it's done in the 'numbered captures'
-     * for loop above.
-     pe_regs_set(pe_regs, pe_reg_flags, unparse_integer(num), buff);
-     */
     pe_regs_set(pe_regs, pe_reg_flags, (char *) entry + 2, buff);
   }
 }
@@ -1569,11 +1729,11 @@ pi_regs_get_ilev(NEW_PE_INFO *pe_info, int type)
 const char *
 pe_regs_intname(int num)
 {
-  static char buff[8];
+  static char buff[32];
   if (num < 10 && num >= 0) {
     return envid[num];
   } else {
-    snprintf(buff, 8, "%d", num);
+    snprintf(buff, sizeof buff, "%d", num);
     return buff;
   }
 }
@@ -1683,6 +1843,16 @@ free_pe_info(NEW_PE_INFO *pe_info)
     pe_regs_free(pe_regs);
   }
 
+  if (pe_info->cmd_raw) {
+    mush_free(pe_info->cmd_raw, "string");
+  }
+  if (pe_info->cmd_evaled) {
+    mush_free(pe_info->cmd_evaled, "string");
+  }
+  if (pe_info->attrname) {
+    mush_free(pe_info->attrname, "string");
+  }
+
 #ifdef DEBUG
   mush_free(pe_info, pe_info->name);
 #else
@@ -1716,12 +1886,12 @@ make_pe_info(char *name __attribute__((__unused__)))
   pe_info->debugging = 0;
   pe_info->nest_depth = 0;
 
-  *pe_info->attrname = '\0';
+  pe_info->attrname = NULL;
 
   pe_info->regvals = pe_regs_create(PE_REGS_QUEUE, "make_pe_info");
 
-  memset(pe_info->cmd_raw, 0, sizeof pe_info->cmd_raw);
-  *pe_info->cmd_evaled = '\0';
+  pe_info->cmd_raw = NULL;
+  pe_info->cmd_evaled = NULL;
 
   pe_info->refcount = 1;
 #ifdef DEBUG
@@ -1808,8 +1978,12 @@ pe_info_from(NEW_PE_INFO *old_pe_info, int flags, PE_REGS *pe_regs)
       pe_regs_copystack(pe_info->regvals, old_pe_info->regvals, PE_REGS_Q, 0);
     }
     if (flags & PE_INFO_COPY_CMDS) {
-      strcpy(pe_info->cmd_raw, old_pe_info->cmd_raw);
-      strcpy(pe_info->cmd_evaled, old_pe_info->cmd_evaled);
+      if (old_pe_info->cmd_raw) {
+        pe_info->cmd_raw = mush_strdup(old_pe_info->cmd_raw, "string");
+      }
+      if (old_pe_info->cmd_evaled) {
+        pe_info->cmd_evaled = mush_strdup(old_pe_info->cmd_evaled, "string");
+      }
     }
   }
 
@@ -2043,7 +2217,8 @@ process_expression(char *buff, char **bp, char const **str, dbref executor,
         *str += 16;
       }
 
-// fprintf(stderr, "Skipped over '%.*s' to '%c'\n", (int)(*str - pos), pos,
+// fprintf(stderr, "Skipped over '%.*s' to '%c'\n", (int)(*str - pos),
+// pos,
 // **str);
 
 #else
@@ -2085,7 +2260,7 @@ process_expression(char *buff, char **bp, char const **str, dbref executor,
        * function,
        * added 17 Sep 2012. Remove when this behaviour is removed. */
       else if (tflags & PT_NOT_COMMA) {
-        if (pe_info && *pe_info->attrname)
+        if (pe_info && pe_info->attrname)
           notify_format(Owner(executor), "Unescaped comma in final arg of %s "
                                          "by #%d in %s. This behavior is "
                                          "deprecated.",
@@ -2612,10 +2787,16 @@ process_expression(char *buff, char **bp, char const **str, dbref executor,
         eflags &= ~PE_BUILTINONLY; /* Only applies to the outermost call */
         if (!fp) {
           if (eflags & PE_FUNCTION_MANDATORY) {
+            char *suggestion;
             *bp = startpos;
             safe_str(T("#-1 FUNCTION ("), buff, bp);
             safe_str(name, buff, bp);
             safe_str(T(") NOT FOUND"), buff, bp);
+            suggestion = suggest_name(name, "FUNCTIONS");
+            if (suggestion) {
+              safe_format(buff, bp, " DID YOU MEAN '%s'", suggestion);
+              mush_free(suggestion, "string");
+            }
             if (process_expression(name, &tp, str, executor, caller, enactor,
                                    PE_NOTHING, PT_PAREN, pe_info))
               retval = 1;

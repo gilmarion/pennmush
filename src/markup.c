@@ -7,8 +7,9 @@
  */
 
 #include "copyrite.h"
-#include "markup.h"
-
+#ifdef WIN32
+#include <Windows.h>
+#endif
 #include <stdio.h>
 #include <ctype.h>
 #include <string.h>
@@ -20,13 +21,15 @@
 #include "conf.h"
 #include "externs.h"
 #include "game.h"
-#include "intmap.h"
 #include "log.h"
 #include "mymalloc.h"
 #include "parse.h"
 #include "pueblo.h"
-#include "rgb.h"
 #include "strutil.h"
+#include "mushsql.h"
+#include "charconv.h"
+#include "map_file.h"
+#include "markup.h"
 
 #define ANSI_BEGIN "\x1B["
 #define ANSI_FINISH "m"
@@ -62,7 +65,6 @@ static int safe_markup_cancel(char const *a_tag, char *buf, char **bp,
 static int escape_marked_str(char **str, char *buff, char **bp);
 static bool valid_hex_digits(const char *, int);
 
-void build_rgb_map(void);
 int ansi_equal(const ansi_data *a, const ansi_data *b);
 int ansi_isnull(const ansi_data a);
 int safe_markup_codes(new_markup_information *mi, int end, char *buff,
@@ -70,74 +72,97 @@ int safe_markup_codes(new_markup_information *mi, int end, char *buff,
 
 static ansi_data ansi_null = NULL_ANSI;
 
-/** Linked list of colornames with appropriate color maps */
-struct rgb_namelist {
-  const char *name; /**< Name of color */
-  int as_xterm;     /**< xterm color code (0-255) */
-  int as_ansi; /**< ANSI color code. Basic 8 ansi colors are 0-7, highlight are
-                  (256 | (0-7)) */
-  struct rgb_namelist *next;
-};
-slab *namelist_slab = NULL;
-intmap *rgb_to_name = NULL;
+bool colorname_lookup(const char *name, int len, int *rgb, int *ansi,
+                      int *xnum);
+bool rgb_lookup(int rgb, int *ansi, int *xnum);
 
-/* Name to RGB color mapping */
-#include "rgbtab.c"
+/** Info on a color from the 16-color ANSI palette */
+struct COLORMAP_16 {
+  int id;         /**< Code for this color (0-7) */
+  char desc;      /**< Lowercase char representing color */
+  uint8_t hilite; /**< Is this char highlighted? */
+  uint32_t hex;   /**< Hex code for this color */
+};
+
+/* Taken from the xterm color chart on wikipedia */
+struct COLORMAP_16 colormap_16[] = {
+  /* normal colors */
+  {0, 'x', 0, 0x000000},
+  {1, 'r', 0, 0xcd0000},
+  {2, 'g', 0, 0x00cd00},
+  {3, 'y', 0, 0xcdcd00},
+  {4, 'b', 0, 0x0000ee},
+  {5, 'm', 0, 0xcd00cd},
+  {6, 'c', 0, 0x00cdcd},
+  {7, 'w', 0, 0xe5e5e5},
+
+  /* Hilite colors */
+  {0, 'x', 1, 0x7f7f7f},
+  {1, 'r', 1, 0xff0000},
+  {2, 'g', 1, 0x00ff00},
+  {3, 'y', 1, 0xffff00},
+  {4, 'b', 1, 0x5c5cff},
+  {5, 'm', 1, 0xff00ff},
+  {6, 'c', 1, 0x00ffff},
+  {7, 'w', 1, 0xffffff},
+
+  {-1, 0, 0, 0}};
 
 /* Populate the RGB color to name mapping */
 void
 build_rgb_map(void)
 {
-  int n;
-  struct rgb_namelist *node, *lst;
+  sqlite3 *sqldb;
+  sqlite3_stmt *creator;
+  int status;
+  MAPPED_FILE *mf;
+  char *errmsg;
+  const char query[] =
+    "INSERT INTO colors(name, rgb, xterm, ansi) SELECT "
+    "json_extract(j.value, '$.name')"
+    ", from_hexstr(json_extract(j.value, '$.rgb'))"
+    ", json_extract(j.value, '$.xterm')"
+    ", json_extract(j.value, '$.ansi') FROM json_each(?) AS j";
 
-  if (rgb_to_name)
+  sqldb = get_shared_db();
+
+  if (!sqldb) {
     return;
-
-  rgb_to_name = im_new();
-  namelist_slab = slab_create("rgb namelist", sizeof *node);
-
-  for (n = 0; allColors[n].name; n += 1) {
-    if (strncmp("xterm", allColors[n].name, 5) == 0)
-      continue;
-    lst = im_find(rgb_to_name, allColors[n].hex);
-    node = slab_malloc(namelist_slab, lst);
-    node->name = allColors[n].name;
-    node->as_xterm = allColors[n].as_xterm;
-    node->as_ansi = allColors[n].as_ansi;
-    node->next = NULL;
-    if (!lst)
-      im_insert(rgb_to_name, allColors[n].hex, node);
-    else {
-      struct rgb_namelist *curr;
-
-      /* Find where to insert current color name into sorted list of
-         names for this RGB tuple. */
-      if (strcmp(node->name, lst->name) < 0) {
-        /* Insert at head of list */
-        const char *tname;
-        int trgb;
-        node->next = lst->next;
-        lst->next = node;
-        tname = lst->name;
-        lst->name = node->name;
-        node->name = tname;
-        trgb = lst->as_xterm;
-        lst->as_xterm = node->as_xterm;
-        node->as_xterm = trgb;
-        trgb = lst->as_ansi;
-        lst->as_ansi = node->as_ansi;
-        node->as_ansi = trgb;
-      } else {
-        for (curr = lst; curr->next; curr = curr->next) {
-          if (strcmp(node->name, curr->name) < 0)
-            break;
-        }
-        node->next = curr->next;
-        curr->next = node;
-      }
-    }
   }
+
+  if (sqlite3_exec(sqldb,
+                   "CREATE TABLE colors(name TEXT NOT NULL PRIMARY KEY COLLATE "
+                   "TRAILNUMBERS, rgb INTEGER NOT NULL, xterm INTEGER NOT "
+                   "NULL, ansi INTEGER NOT NULL) WITHOUT ROWID;"
+                   "CREATE INDEX rgb_idx ON colors(rgb);"
+                   "CREATE VIEW named_colors AS SELECT * FROM colors WHERE "
+                   "name NOT LIKE 'xterm%'",
+                   NULL, NULL, &errmsg) != SQLITE_OK) {
+    do_rawlog(LT_ERR, "Unable to create colors table: %s", errmsg);
+    sqlite3_free(errmsg);
+    return;
+  }
+
+  creator = prepare_statement_cache(sqldb, query, "colors.insert", 0);
+  if (!creator) {
+    return;
+  }
+
+  mf = map_file(options.colors_file, 0);
+  if (!mf) {
+    sqlite3_finalize(creator);
+    return;
+  }
+  sqlite3_bind_text(creator, 1, mf->data, mf->len, SQLITE_STATIC);
+  do {
+    status = sqlite3_step(creator);
+  } while (is_busy_status(status));
+  if (status != SQLITE_DONE) {
+    do_rawlog(LT_ERR, "Unable to populate colors table: %s",
+              sqlite3_errmsg(sqldb));
+  }
+  sqlite3_finalize(creator);
+  unmap_file(mf);
 }
 
 /* ARGSUSED */
@@ -235,23 +260,57 @@ enum color_styles {
 FUNCTION(fun_colors)
 {
   if (nargs <= 1) {
-    int i;
     bool shown = 0;
+    sqlite3 *sqldb;
+    sqlite3_stmt *lister;
+    int status;
+
     /* Return list of available color names, skipping over the 256 'xtermN'
      * colors */
-    for (i = 0; allColors[i].name; i++) {
-      if (args[0] && *args[0]) {
-        if (!quick_wild(args[0], allColors[i].name))
-          continue;
-      } else if (strncmp("xterm", allColors[i].name, 5) == 0) {
-        continue;
-      }
-      if (shown)
-        safe_chr(' ', buff, bp);
-      else
-        shown = 1;
-      safe_str(allColors[i].name, buff, bp);
+
+    sqldb = get_shared_db();
+    if (!sqldb) {
+      safe_str(T("#-1 SQLITE ERROR"), buff, bp);
+      return;
     }
+
+    if (args[0] && *args[0]) {
+      /* List colors matching a wildcard. */
+      lister = prepare_statement(
+        sqldb,
+        "SELECT name FROM colors WHERE name LIKE ? ESCAPE '$' ORDER BY name",
+        "colors.list.names_pattern");
+      if (lister) {
+        int len, ulen;
+        char *as_utf8;
+        char *converted = glob_to_like(args[0], '$', &len);
+        as_utf8 = latin1_to_utf8(converted, len, &ulen, "string");
+        mush_free(converted, "string");
+        sqlite3_bind_text(lister, 1, as_utf8, ulen, free_string);
+      }
+    } else {
+      /* List all colors but xtermXX ones */
+      lister =
+        prepare_statement(sqldb, "SELECT name FROM named_colors ORDER BY name",
+                          "colors.list.names_all");
+    }
+    if (!lister) {
+      safe_str(T("#-1 SQLITE ERROR"), buff, bp);
+      return;
+    }
+
+    do {
+      status = sqlite3_step(lister);
+      if (status == SQLITE_ROW) {
+        const char *name = (const char *) sqlite3_column_text(lister, 0);
+        if (shown)
+          safe_chr(' ', buff, bp);
+        else
+          shown = 1;
+        safe_strl(name, sqlite3_column_bytes(lister, 0), buff, bp);
+      }
+    } while (status == SQLITE_ROW || is_busy_status(status));
+    sqlite3_reset(lister);
   } else if (nargs == 2) {
     /* Return color info for a specific color */
     ansi_data ad;
@@ -280,8 +339,8 @@ FUNCTION(fun_colors)
         cs = CS_HEX;
       else if (strcmp("16color", curr) == 0 || strcmp("c", curr) == 0)
         cs = CS_16;
-      else if (strcmp("256color", curr) == 0 || strcmp("xterm256", curr) == 0
-               || strcmp("d", curr) == 0)
+      else if (strcmp("256color", curr) == 0 || strcmp("xterm256", curr) == 0 ||
+               strcmp("d", curr) == 0)
         cs = CS_256;
       else if (strcmp("xterm256x", curr) == 0 || strcmp("h", curr) == 0)
         cs = CS_256hex;
@@ -337,13 +396,12 @@ FUNCTION(fun_colors)
         safe_format(buff, bp, "#%06x",
                     color_to_hex(color, (!i && (ad.bits & CBIT_HILITE))));
         break;
-      case CS_RGB:
-        {
-          uint32_t hex = color_to_hex(color, (!i && (ad.bits & CBIT_HILITE)));
-          safe_format(buff, bp, "%d %d %d", (hex >> 16) & 0xFF,
-                      (hex >> 8) & 0xFF, hex & 0xFF);
-          break;
-        }
+      case CS_RGB: {
+        uint32_t hex = color_to_hex(color, (!i && (ad.bits & CBIT_HILITE)));
+        safe_format(buff, bp, "%d %d %d", (hex >> 16) & 0xFF, (hex >> 8) & 0xFF,
+                    hex & 0xFF);
+        break;
+      }
       case CS_16:
         j = ansi_map_16(color, i, &hilite);
 
@@ -360,21 +418,45 @@ FUNCTION(fun_colors)
                      buff, bp);
         break;
       case CS_256hex:
-        safe_format(buff, bp, "%x", ansi_map_256(color, (!i && (ad.bits & CBIT_HILITE)), 0));
+        safe_format(buff, bp, "%x",
+                    ansi_map_256(color, (!i && (ad.bits & CBIT_HILITE)), 0));
         break;
       case CS_NAME: {
         uint32_t hex;
-        struct rgb_namelist *names;
         bool shown = 0;
+        sqlite3 *sqldb;
+        sqlite3_stmt *finder;
+        int status;
 
         hex = color_to_hex(color, 0);
 
-        for (names = im_find(rgb_to_name, hex); names; names = names->next) {
-          if (shown)
-            safe_chr(' ', buff, bp);
-          safe_str(names->name, buff, bp);
-          shown = 1;
+        sqldb = get_shared_db();
+        if (!sqldb) {
+          safe_str(T("#-1 SQLITE ERROR"), buff, bp);
+          return;
         }
+
+        finder = prepare_statement(
+          sqldb, "SELECT name FROM named_colors WHERE rgb = ? ORDER BY name",
+          "colors.list.rgb");
+        if (!finder) {
+          safe_str(T("#-1 SQLITE ERROR"), buff, bp);
+          return;
+        }
+
+        sqlite3_bind_int(finder, 1, (int) hex);
+        do {
+          status = sqlite3_step(finder);
+          if (status == SQLITE_ROW) {
+            const char *name = (const char *) sqlite3_column_text(finder, 0);
+            if (shown) {
+              safe_chr(' ', buff, bp);
+            }
+            safe_strl(name, sqlite3_column_bytes(finder, 0), buff, bp);
+            shown = 1;
+          }
+        } while (status == SQLITE_ROW || is_busy_status(status));
+        sqlite3_reset(finder);
 
         if (!shown)
           safe_str(T("#-1 NO MATCHING COLOR NAME"), buff, bp);
@@ -733,6 +815,81 @@ nest_ansi_data(ansi_data *old, ansi_data *cur)
 
 #define ERROR_COLOR 0xff69b4 /* Hot Pink. */
 
+bool
+colorname_lookup(const char *name, int len, int *rgb, int *ansi, int *xnum)
+{
+  sqlite3 *sqldb;
+  sqlite3_stmt *finder;
+  int status;
+  int ulen;
+  char *utf8;
+
+  sqldb = get_shared_db();
+  if (!sqldb) {
+    return 0;
+  }
+
+  finder = prepare_statement(
+    sqldb, "SELECT rgb, ansi, xterm FROM colors WHERE name = ?",
+    "colors.lookup.name");
+  if (!finder) {
+    return 0;
+  }
+
+  utf8 = latin1_to_utf8(name, len, &ulen, "string");
+  sqlite3_bind_text(finder, 1, utf8, ulen, free_string);
+  do {
+    status = sqlite3_step(finder);
+  } while (is_busy_status(status));
+  if (status == SQLITE_ROW) {
+    if (rgb) {
+      *rgb = sqlite3_column_int(finder, 0);
+    }
+    if (ansi) {
+      *ansi = sqlite3_column_int(finder, 1);
+    }
+    if (xnum) {
+      *xnum = sqlite3_column_int(finder, 2);
+    }
+  }
+  sqlite3_reset(finder);
+  return status == SQLITE_ROW;
+}
+
+bool
+rgb_lookup(int rgb, int *ansi, int *xnum)
+{
+  sqlite3 *sqldb;
+  sqlite3_stmt *finder;
+  int status;
+
+  sqldb = get_shared_db();
+  if (!sqldb) {
+    return 0;
+  }
+
+  finder = prepare_statement(
+    sqldb, "SELECT ansi, xterm FROM colors WHERE rgb = ?", "colors.lookup.rgb");
+  if (!finder) {
+    return 0;
+  }
+
+  sqlite3_bind_int(finder, 1, rgb);
+  do {
+    status = sqlite3_step(finder);
+  } while (is_busy_status(status));
+  if (status == SQLITE_ROW) {
+    if (ansi) {
+      *ansi = sqlite3_column_int(finder, 0);
+    }
+    if (xnum) {
+      *xnum = sqlite3_column_int(finder, 1);
+    }
+  }
+  sqlite3_reset(finder);
+  return status == SQLITE_ROW;
+}
+
 /** Return the hex code for a given ANSI color */
 uint32_t
 color_to_hex(const char *name, bool hilite)
@@ -743,6 +900,7 @@ color_to_hex(const char *name, bool hilite)
   char buf[BUFFER_LEN] = {'\0'}, *p;
 
   /* This should've been checked before it ever got here. */
+
   if (!name || !name[0]) {
     return 0;
   }
@@ -751,7 +909,7 @@ color_to_hex(const char *name, bool hilite)
     return strtol(name + 1, NULL, 16);
   }
   if (name[0] == '+') {
-    const struct RGB_COLORMAP *c;
+    int hex = 0;
     int len = 0;
 
     name++;
@@ -765,9 +923,9 @@ color_to_hex(const char *name, bool hilite)
     }
     *p = '\0';
 
-    c = colorname_lookup(buf, len);
-    if (c)
-      return c->hex;
+    if (colorname_lookup(buf, len, &hex, NULL, NULL)) {
+      return hex;
+    }
 
     /* It's an invalid color. Return hot pink since we shouldn't have gotten
      * here? */
@@ -818,7 +976,7 @@ ansi_map_16(const char *name, bool bg, bool *hilite)
   int best = 0;
   int i;
   int max;
-  struct rgb_namelist *color;
+  int ansi = 0;
 
   *hilite = 0;
 
@@ -831,27 +989,31 @@ ansi_map_16(const char *name, bool bg, bool *hilite)
   /* Is it an xterm color number? */
   if (strncasecmp(name, "+xterm", 5) == 0) {
     unsigned int xnum;
-    struct RGB_COLORMAP *xcolor;
+    char xname[16];
+    int len;
 
     xnum = strtoul(name + 6, NULL, 10);
     if (xnum > 255)
       xnum = 255;
 
-    xcolor = &allColors[xnum];
-    if (!bg && xcolor->as_ansi & 0x0100)
+    len = snprintf(xname, sizeof xname, "xterm%u", xnum);
+    colorname_lookup(xname, len, NULL, &ansi, NULL);
+
+    if (!bg && ansi & 0x0100) {
       *hilite = 1;
-    return (xcolor->as_ansi & 0xFF) + (bg ? 40 : 30);
+    }
+    return (ansi & 0xFF) + (bg ? 40 : 30);
   }
 
   /* Otherwise it's a name or RGB sequence. Map it to hex. */
   hex = color_to_hex(name, 0);
 
   /* Predefined color names have their downgrades cached */
-  color = im_find(rgb_to_name, hex);
-  if (color) {
-    if (!bg && color->as_ansi & 0x0100)
+  if (rgb_lookup(hex, &ansi, NULL)) {
+    if (!bg && ansi & 0x0100) {
       *hilite = 1;
-    return (color->as_ansi & 0xFF) + (bg ? 40 : 30);
+    }
+    return (ansi & 0xFF) + (bg ? 40 : 30);
   }
 
   diff = 0x0FFFFFFF;
@@ -881,20 +1043,11 @@ int
 ansi_map_256(const char *name, bool hilite, bool all)
 {
   uint32_t hex, diff, cdiff;
-  int best = 0;
-  int i;
-  struct rgb_namelist *color;
-  static int xtermi = -1;
-
-  if (xtermi == -1) {
-    int n;
-    for (n = 0; allColors[n].name; n += 1) {
-      if (strcmp(allColors[n].name, "xterm0") == 0) {
-        xtermi = n;
-        break;
-      }
-    }
-  }
+  int best = -1;
+  int num = 0;
+  sqlite3 *sqldb;
+  sqlite3_stmt *finder;
+  int status;
 
   /* Is it an xterm color number? */
   if (strncasecmp(name, "+xterm", 6) == 0) {
@@ -907,26 +1060,50 @@ ansi_map_256(const char *name, bool hilite, bool all)
 
   /* Predefined color names have their downgrades cached */
   hex = color_to_hex(name, hilite);
-  color = im_find(rgb_to_name, hex);
-  if (color)
-    return color->as_xterm;
+  if (rgb_lookup(hex, NULL, &num)) {
+    return num;
+  }
 
   diff = 0x0FFFFFFF;
   /* Now find the closest 256 color match. */
-  best = 0;
 
-  for (i = (all ? xtermi : xtermi + 16); i < xtermi + 256; i++) {
-    if (allColors[i].hex == hex) {
-      best = i;
-      break;
-    }
-    cdiff = hex_difference(allColors[i].hex, hex);
-    if (cdiff < diff) {
-      best = i;
-      diff = cdiff;
-    }
+  sqldb = get_shared_db();
+  if (!sqldb) {
+    return -1;
   }
-  return best - xtermi;
+
+  finder = prepare_statement(
+    sqldb, "SELECT rgb, xterm FROM colors WHERE name LIKE 'xterm%'",
+    "colors.list.xterm");
+  if (!finder) {
+    return -1;
+  }
+
+  do {
+    status = sqlite3_step(finder);
+    if (status == SQLITE_ROW) {
+      uint32_t rgb = sqlite3_column_int(finder, 0);
+      num = sqlite3_column_int(finder, 1);
+
+      if (all && num < 16) {
+        continue;
+      }
+
+      if (hex == rgb) {
+        best = num;
+        break;
+      }
+
+      cdiff = hex_difference(rgb, hex);
+      if (cdiff < diff) {
+        best = num;
+        diff = cdiff;
+      }
+    }
+  } while (status == SQLITE_ROW || is_busy_status(status));
+  sqlite3_reset(finder);
+
+  return best;
 }
 
 typedef int (*writer_func)(ansi_data *old, ansi_data *cur, int ansi_format,
@@ -1185,7 +1362,7 @@ valid_color_name(const char *name)
   }
   *p = '\0';
 
-  return colorname_lookup(buff, len) != NULL;
+  return colorname_lookup(buff, len, NULL, NULL, NULL);
 }
 
 extern const unsigned char *tables;
@@ -1194,53 +1371,65 @@ extern const unsigned char *tables;
 static bool
 valid_hex_digits(const char *digits, int len)
 {
-  static pcre *re = NULL;
-  static pcre_extra *extra = NULL;
-  int ovec[9];
+  static pcre2_code *re = NULL;
+  static pcre2_match_data *md = NULL;
 
   if (!re) {
-    const char *errptr;
-    int erroff;
+    int errcode;
+    PCRE2_SIZE erroff;
 
-    re = pcre_compile("^[[:xdigit:]]+$", 0, &errptr, &erroff, tables);
+    re = pcre2_compile(
+      (const PCRE2_UCHAR *) "^[[:xdigit:]]+$", PCRE2_ZERO_TERMINATED,
+      re_compile_flags | PCRE2_NO_UTF_CHECK, &errcode, &erroff, re_compile_ctx);
     if (!re) {
-      do_rawlog(LT_ERR, "valid_hex_code: Unable to compile re: %s", errptr);
+      char errstr[120];
+      pcre2_get_error_message(errcode, (PCRE2_UCHAR *) errstr, sizeof errstr);
+      do_rawlog(LT_ERR, "valid_hex_code: Unable to compile re: %s", errstr);
       return 0;
     }
-    extra = pcre_study(re, pcre_study_flags, &errptr);
+    pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+    md = pcre2_match_data_create_from_pattern(re, NULL);
   }
 
-  if (!digits)
+  if (!digits) {
     return 0;
+  }
 
-  return pcre_exec(re, extra, digits, len, 0, 0, ovec, 9) > 0;
+  return pcre2_match(re, (const PCRE2_UCHAR *) digits, len, 0, re_match_flags,
+                     md, re_match_ctx) >= 0;
 }
 
 /* Return true if s is in the format <#RRGGBB>, with optional spaces. */
 static bool
 valid_angle_hex(const char *s, int len)
 {
-  static pcre *re = NULL;
-  static pcre_extra *extra = NULL;
-  int ovec[9];
+  static pcre2_code *re = NULL;
+  static pcre2_match_data *md = NULL;
 
   if (!re) {
-    const char *errptr;
-    int erroff;
+    int errcode;
+    PCRE2_SIZE erroff;
 
-    re = pcre_compile("^<\\s*#[[:xdigit:]]{6}\\s*>\\s*$", 0, &errptr, &erroff,
-                      tables);
+    re = pcre2_compile((const PCRE2_UCHAR *) "^<\\s*#[[:xdigit:]]{6}\\s*>\\s*$",
+                       PCRE2_ZERO_TERMINATED,
+                       re_compile_flags | PCRE2_NO_UTF_CHECK, &errcode, &erroff,
+                       re_compile_ctx);
     if (!re) {
-      do_rawlog(LT_ERR, "valid_angle_hex: Unable to compile re: %s", errptr);
+      char errstr[120];
+      pcre2_get_error_message(errcode, (PCRE2_UCHAR *) errstr, sizeof errstr);
+      do_rawlog(LT_ERR, "valid_angle_hex: Unable to compile re: %s", errstr);
       return 0;
     }
-    extra = pcre_study(re, pcre_study_flags, &errptr);
+    pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+    md = pcre2_match_data_create_from_pattern(re, NULL);
   }
 
-  if (!s)
+  if (!s) {
     return 0;
+  }
 
-  return pcre_exec(re, extra, s, len, 0, 0, ovec, 9) > 0;
+  return pcre2_match(re, (const PCRE2_UCHAR *) s, len, 0, re_match_flags, md,
+                     re_match_ctx) >= 0;
 }
 
 /* Return true if s of the format <R G B>, and store the color in
@@ -1249,41 +1438,50 @@ valid_angle_hex(const char *s, int len)
 static bool
 valid_angle_triple(const char *s, int len, char *rgbs)
 {
-  static pcre *re = NULL;
-  static pcre_extra *extra = NULL;
-  int ovec[15];
+  static pcre2_code *re = NULL;
+  static pcre2_match_data *md = NULL;
   int matches;
   int n;
   char *rgbsp = rgbs;
 
   if (!re) {
-    const char *errptr;
-    int erroff;
+    int errcode;
+    PCRE2_SIZE erroff;
 
-    re = pcre_compile("^<\\s*(\\d{1,3})\\s+((?1))\\s+((?1))\\s*>\\s*$", 0,
-                      &errptr, &erroff, tables);
+    re = pcre2_compile(
+      (const PCRE2_UCHAR *) "^<\\s*(\\d{1,3})\\s+((?1))\\s+((?1))\\s*>\\s*$",
+      PCRE2_ZERO_TERMINATED, re_compile_flags | PCRE2_NO_UTF_CHECK, &errcode,
+      &erroff, re_compile_ctx);
     if (!re) {
-      do_rawlog(LT_ERR, "valid_angle_triple: Unable to compile re: %s", errptr);
+      char errstr[120];
+      pcre2_get_error_message(errcode, (PCRE2_UCHAR *) errstr, sizeof errstr);
+      do_rawlog(LT_ERR, "valid_angle_triple: Unable to compile re: %s", errstr);
       return 0;
     }
-    extra = pcre_study(re, pcre_study_flags, &errptr);
+    pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+    md = pcre2_match_data_create_from_pattern(re, NULL);
   }
 
-  if (!s)
+  if (!s) {
     return 0;
+  }
 
-  matches = pcre_exec(re, extra, s, len, 0, 0, ovec, 15);
-  if (matches != 4)
+  matches = pcre2_match(re, (const PCRE2_UCHAR *) s, len, 0, re_match_flags, md,
+                        re_match_ctx);
+  if (matches != 4) {
     return 0;
+  }
 
   for (n = 1; n < 4; n += 1) {
     int color;
     char colorstr[8];
+    PCRE2_SIZE clen = sizeof colorstr;
 
-    pcre_copy_substring(s, ovec, matches, n, colorstr, 8);
+    pcre2_substring_copy_bynumber(md, n, (PCRE2_UCHAR *) colorstr, &clen);
     color = parse_integer(colorstr);
-    if (color > 255)
+    if (color > 255) {
       return 0;
+    }
     safe_hexchar(color, rgbs, &rgbsp);
   }
   rgbs[6] = '\0';
@@ -1339,17 +1537,21 @@ define_ansi_data(ansi_data *store, const char *str)
         memcpy(buff, name, len);
         buff[len] = '\0';
         len = remove_trailing_whitespace(buff, len);
-        if (!valid_color_name(buff))
+
+        if (!valid_color_name(buff)) {
           return 1;
+        }
 
         if (strncasecmp("xterm", buff, 5) ==
-            0) /* xterm color ids are stored directly. */
-          snprintf(ptr, COLOR_NAME_LEN, "+%s", buff);
-        else if (len > 6) /* Use hex code to save on buffer space */
-          snprintf(ptr, COLOR_NAME_LEN, "#%06x",
-                   color_to_hex(tprintf("+%s", buff), 0));
-        else
-          snprintf(ptr, COLOR_NAME_LEN, "+%s", buff);
+            0) { /* xterm color ids are stored directly. */
+          snprintf(ptr, COLOR_NAME_LEN, "+%.8s", buff);
+        } else if (len > 6) { /* Use hex code to save on buffer space */
+          char cbuff[BUFFER_LEN + 1];
+          snprintf(cbuff, sizeof cbuff, "+%s", buff);
+          snprintf(ptr, COLOR_NAME_LEN, "#%06x", color_to_hex(cbuff, 0));
+        } else /* len <= 6 */ {
+          snprintf(ptr, COLOR_NAME_LEN, "+%.6s", buff);
+        }
 
         break;
       case '#':
@@ -1365,7 +1567,7 @@ define_ansi_data(ansi_data *store, const char *str)
           return 1;
         if (!valid_hex_digits(buff, len))
           return 1;
-        snprintf(ptr, COLOR_NAME_LEN, "#%s", buff);
+        snprintf(ptr, COLOR_NAME_LEN, "#%.6s", buff);
         break;
       case '<':
         /* <#RRGGBB> or <R G B> */
@@ -1378,9 +1580,7 @@ define_ansi_data(ansi_data *store, const char *str)
           if (valid_angle_hex(name, len)) {
             /* < #RRGGBB > */
             char *st = strchr(name, '#');
-            memcpy(buff, st + 1, 6);
-            buff[6] = '\0';
-            snprintf(ptr, COLOR_NAME_LEN, "#%s", buff);
+            mush_strncpy(ptr, st, 8);
           } else if (valid_angle_triple(name, len, rgbs)) {
             /* < R G B > */
             snprintf(ptr, COLOR_NAME_LEN, "#%s", rgbs);
@@ -2565,7 +2765,8 @@ safe_ansi_string(ansi_string *as, int start, int len, char *buff, char **bp)
       }
     }
   }
-  if ((start >= as->len) || (start < 0) || (len < 1)) {
+  if (start >= as->len || start < 0 || len < 1) {
+    return 0;
   }
 
   if (start + len >= as->len) {
@@ -2904,13 +3105,17 @@ safe_decompose_str(char *orig, char *buff, char **bp)
  * \return size of subpattern, or -1 if unknown pattern
  */
 int
-ansi_pcre_copy_substring(ansi_string *as, int *ovector, int stringcount,
+ansi_pcre_copy_substring(ansi_string *as, pcre2_match_data *md, int stringcount,
                          int stringnumber, int nonempty, char *buff, char **bp)
 {
   int yield;
-  if (stringnumber < 0 || stringnumber >= stringcount)
+  PCRE2_SIZE *ovector;
+
+  if (stringnumber < 0 || stringnumber >= stringcount) {
     return -1;
+  }
   stringnumber *= 2;
+  ovector = pcre2_get_ovector_pointer(md);
   yield = ovector[stringnumber + 1] - ovector[stringnumber];
   if (!nonempty || yield) {
     safe_ansi_string(as, ovector[stringnumber], yield, buff, bp);
@@ -2931,14 +3136,17 @@ ansi_pcre_copy_substring(ansi_string *as, int *ovector, int stringcount,
  * \return size of subpattern, or -1 if unknown pattern
  */
 int
-ansi_pcre_copy_named_substring(const pcre *code, ansi_string *as, int *ovector,
-                               int stringcount, const char *stringname, int ne,
-                               char *buff, char **bp)
+ansi_pcre_copy_named_substring(const pcre2_code *re, ansi_string *as,
+                               pcre2_match_data *md, int stringcount,
+                               const char *stringname, int ne, char *buff,
+                               char **bp)
 {
-  int n = pcre_get_stringnumber(code, stringname);
-  if (n <= 0)
+  int n =
+    pcre2_substring_number_from_name(re, (const PCRE2_UCHAR *) stringname);
+  if (n <= 0) {
     return -1;
-  return ansi_pcre_copy_substring(as, ovector, stringcount, n, ne, buff, bp);
+  }
+  return ansi_pcre_copy_substring(as, md, stringcount, n, ne, buff, bp);
 }
 
 /** Safely add a tag into a buffer.
@@ -3045,4 +3253,29 @@ safe_tag_wrap(char const *a_tag, char const *params, char const *data,
   if (result)
     memset(save, '\0', *bp - save);
   return result;
+}
+
+char *
+open_tag(const char *x)
+{
+  static char buff[BUFFER_LEN + 3];
+  snprintf(buff, sizeof buff, "%c%c%s%c", TAG_START, MARKUP_HTML, x, TAG_END);
+  return buff;
+}
+
+char *
+close_tag(const char *x)
+{
+  static char buff[BUFFER_LEN + 4];
+  snprintf(buff, sizeof buff, "%c%c/%s%c", TAG_START, MARKUP_HTML, x, TAG_END);
+  return buff;
+}
+
+char *
+wrap_tag(const char *x, const char *y)
+{
+  static char buff[(BUFFER_LEN * 2) + 8];
+  snprintf(buff, sizeof buff, "%c%c%s%c%s%c%c/%s%c", TAG_START, MARKUP_HTML, x,
+           TAG_END, y, TAG_START, MARKUP_HTML, x, TAG_END);
+  return buff;
 }

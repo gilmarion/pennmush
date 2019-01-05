@@ -27,7 +27,7 @@ extern dbref orator;
 #endif
 
 char *WIN32_CDECL tprintf(const char *fmt, ...)
-  __attribute__((__format__(__printf__, 1, 2)));
+  __attribute__((__format__(__printf__, 1, 2), deprecated));
 
 /* The #defs for our notify_anything hacks.. Errr. Functions */
 #define NA_NORELAY 0x0001        /**< Don't relay sound */
@@ -47,7 +47,7 @@ char *WIN32_CDECL tprintf(const char *fmt, ...)
 #define NA_SPOOF 0x8000          /**< \@ns* message, overrides NOSPOOF */
 #define NA_INTER_LOCK                                                          \
   0x10000 /**< Message subject to \@lock/interact even if not otherwise marked \
-             */
+           */
 #define NA_INTERACTION                                                         \
   (NA_INTER_HEAR | NA_INTER_SEE | NA_INTER_PRESENCE |                          \
    NA_INTER_LOCK)         /**< Message follows interaction rules */
@@ -71,13 +71,11 @@ char *WIN32_CDECL tprintf(const char *fmt, ...)
 
 #define MSG_MARKUP                                                             \
   0x10 /**< Leave markup in internal format, rather than stripping/converting  \
-          */
+        */
 #define MSG_ANSI2 0x20    /**< Ansi-highlight only */
 #define MSG_ANSI16 0x40   /**< 16 bit Color */
 #define MSG_XTERM256 0x80 /**< XTERM 256 Color */
-#ifndef WITHOUT_WEBSOCKETS
-#define MSG_WEBSOCKETS   0x10000000
-#endif /* undef WITHOUT_WEBSOCKETS */
+#define MSG_WEBSOCKETS 0x10000000
 
 /**
  * \verbatim
@@ -168,5 +166,7 @@ dbref na_channel(dbref current, void *data);
 /* Notify with a printf-style format */
 void notify_format(dbref player, const char *fmt, ...)
   __attribute__((__format__(__printf__, 2, 3)));
+
+int queue_newwrite(DESC *d, const char *b, int n);
 
 #endif /* __NOTIFY_H */

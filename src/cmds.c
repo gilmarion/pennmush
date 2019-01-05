@@ -10,6 +10,7 @@
 
 #include "copyrite.h"
 
+#include <ctype.h>
 #include <string.h>
 
 #ifdef HAVE_SYS_TYPES_H
@@ -22,6 +23,10 @@
 #ifdef WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#endif
+
+#ifdef HAVE_LIBCURL
+#include <curl/curl.h>
 #endif
 
 #include "access.h"
@@ -48,6 +53,8 @@
 #include "ssl_slave.h"
 #include "strutil.h"
 #include "version.h"
+#include "mushsql.h"
+#include "charconv.h"
 
 /* External Stuff */
 void do_poor(dbref player, char *arg1);
@@ -60,6 +67,10 @@ void do_writelog(dbref player, char *str, int ltype);
 void do_readcache(dbref player);
 void do_uptime(dbref player, int mortal);
 extern int config_set(const char *opt, char *val, int source, int restrictions);
+
+extern struct http_request *active_http_request;
+extern void do_http_respond_code(const char *code);
+extern void do_http_respond_header(const char *name, const char *value);
 
 extern DESC *lookup_desc(dbref executor, const char *name);
 /** Is there a right-hand side of the equal sign? From command.c */
@@ -147,7 +158,7 @@ COMMAND(cmd_sockset)
     notify(executor, T("Set what option?"));
 }
 
-COMMAND(cmd_atrchown) { do_atrchown(executor, arg_left, arg_right); }
+COMMAND(cmd_atrchown) { (void) do_atrchown(executor, arg_left, arg_right); }
 
 COMMAND(cmd_boot)
 {
@@ -282,10 +293,10 @@ COMMAND(cmd_chownall)
 COMMAND(cmd_chown)
 {
   if (strchr(arg_left, '/')) {
-    do_atrchown(executor, arg_left, arg_right);
+    (void) do_atrchown(executor, arg_left, arg_right);
   } else {
-    do_chown(executor, arg_left, arg_right, SW_ISSET(sw, SWITCH_PRESERVE),
-             queue_entry->pe_info);
+    (void) do_chown(executor, arg_left, arg_right,
+                    SW_ISSET(sw, SWITCH_PRESERVE), queue_entry->pe_info);
   }
 }
 
@@ -370,12 +381,8 @@ COMMAND(cmd_create)
 
 COMMAND(cmd_clone)
 {
-  if (SW_ISSET(sw, SWITCH_PRESERVE))
-    do_clone(executor, arg_left, args_right[1], SWITCH_PRESERVE, args_right[2],
-             queue_entry->pe_info);
-  else
-    do_clone(executor, arg_left, args_right[1], SWITCH_NONE, args_right[2],
-             queue_entry->pe_info);
+  do_clone(executor, arg_left, args_right[1], SW_ISSET(sw, SWITCH_PRESERVE),
+           args_right[2], queue_entry->pe_info);
 }
 
 COMMAND(cmd_dbck) { do_dbck(executor); }
@@ -584,22 +591,22 @@ COMMAND(cmd_force)
 
 COMMAND(cmd_function)
 {
-  if (SW_ISSET(sw, SWITCH_DELETE))
+  if (SW_ISSET(sw, SWITCH_DELETE)) {
     do_function_delete(executor, arg_left);
-  else if (SW_ISSET(sw, SWITCH_ENABLE))
+  } else if (SW_ISSET(sw, SWITCH_ENABLE)) {
     do_function_toggle(executor, arg_left, 1);
-  else if (SW_ISSET(sw, SWITCH_DISABLE))
+  } else if (SW_ISSET(sw, SWITCH_DISABLE)) {
     do_function_toggle(executor, arg_left, 0);
-  else if (SW_ISSET(sw, SWITCH_RESTRICT))
+  } else if (SW_ISSET(sw, SWITCH_RESTRICT)) {
     do_function_restrict(executor, arg_left, args_right[1],
                          SW_ISSET(sw, SWITCH_BUILTIN));
-  else if (SW_ISSET(sw, SWITCH_RESTORE))
+  } else if (SW_ISSET(sw, SWITCH_RESTORE)) {
     do_function_restore(executor, arg_left);
-  else if (SW_ISSET(sw, SWITCH_ALIAS))
-    alias_function(executor, arg_left, args_right[1]);
-  else if (SW_ISSET(sw, SWITCH_CLONE))
+  } else if (SW_ISSET(sw, SWITCH_ALIAS)) {
+    do_function_alias(executor, arg_left, args_right[1]);
+  } else if (SW_ISSET(sw, SWITCH_CLONE)) {
     do_function_clone(executor, arg_left, args_right[1]);
-  else {
+  } else {
     int split;
     char *saved;
     split = 0;
@@ -743,11 +750,10 @@ COMMAND(cmd_lemit)
 
 COMMAND(cmd_link)
 {
-  do_link(executor, arg_left, arg_right, SW_ISSET(sw, SWITCH_PRESERVE),
-          queue_entry->pe_info);
+  (void) do_link(executor, arg_left, arg_right, SW_ISSET(sw, SWITCH_PRESERVE),
+                 queue_entry->pe_info);
 }
 
-extern slab *attrib_slab;
 extern slab *bvm_asmnode_slab;
 extern slab *chanlist_slab;
 extern slab *chanuser_slab;
@@ -759,10 +765,8 @@ extern slab *intmap_slab;
 extern slab *lock_slab;
 extern slab *mail_slab;
 extern slab *memcheck_slab;
-extern slab *namelist_slab;
 extern slab *pe_reg_slab;
 extern slab *pe_reg_val_slab;
-extern slab *player_dbref_slab;
 extern slab *text_block_slab;
 
 static void
@@ -778,31 +782,15 @@ do_list_allocations(dbref player)
      to verify that each slab is never recreated. To be safe, just make it
      non-static for now. */
   const slab *const slabs[] = {
-    attrib_slab,
 #ifdef DEBUG
     /* This should always be 0. No need to display it most of the
        time. */
     bvm_asmnode_slab,
 #endif
-    chanlist_slab,
-    chanuser_slab,
-    flag_slab,
-    function_slab,
-#if COMPRESSION_TYPE == 1 || COMPRESSION_TYPE == 2
-    huffman_slab,
-#endif
-    lock_slab,
-    mail_slab,
-    memcheck_slab,
-    text_block_slab,
-    player_dbref_slab,
-    intmap_slab,
-    pe_reg_slab,
-    pe_reg_val_slab,
-    flagbucket_slab,
-    namelist_slab, /* This used to be in a separate if check, so it may be
-                      NULL. Be careful if making this static. */
-  };
+    chanlist_slab,    chanuser_slab, flag_slab,   function_slab,
+    huffman_slab,     lock_slab,     mail_slab,   memcheck_slab,
+    text_block_slab,  intmap_slab,   pe_reg_slab, pe_reg_val_slab,
+    flagbucket_slab};
   size_t i;
 
   if (!Hasprivs(player)) {
@@ -812,6 +800,9 @@ do_list_allocations(dbref player)
 
   for (i = 0; i < sizeof(slabs) / sizeof(slabs[0]); ++i) {
     struct slab_stats stats;
+    if (!slabs[i]) {
+      continue;
+    }
     slab_describe(slabs[i], &stats);
     notify_format(player, "Allocator for %s:", stats.name);
     notify_format(player,
@@ -1575,10 +1566,20 @@ COMMAND(cmd_include)
 COMMAND(cmd_trigger)
 {
   int flags = TRIGGER_DEFAULT;
+  if (SW_ISSET(sw, SWITCH_MATCH))
+    flags |= TRIGGER_MATCH;
   if (SW_ISSET(sw, SWITCH_SPOOF))
     flags |= TRIGGER_SPOOF;
   if (SW_ISSET(sw, SWITCH_CLEARREGS))
     flags |= TRIGGER_CLEARREGS;
+  if (SW_ISSET(sw, SWITCH_INLINE))
+    flags |= TRIGGER_INLINE;
+  if (SW_ISSET(sw, SWITCH_NOBREAK))
+    flags |= TRIGGER_NOBREAK;
+  if (SW_ISSET(sw, SWITCH_LOCALIZE))
+    flags |= TRIGGER_LOCALIZE;
+  if (SW_ISSET(sw, SWITCH_INPLACE))
+    flags |= (TRIGGER_LOCALIZE | TRIGGER_INLINE | TRIGGER_NOBREAK);
   do_trigger(executor, enactor, arg_left, args_right, queue_entry, flags);
 }
 
@@ -1691,11 +1692,12 @@ COMMAND(cmd_buy)
   char *from = NULL;
   char *forwhat = NULL;
   int price = -1;
+  char ibuff[BUFFER_LEN];
 
-  upcasestr(arg_left);
+  strupper_r(arg_left, ibuff, sizeof ibuff);
 
-  from = strstr(arg_left, " FROM ");
-  forwhat = strstr(arg_left, " FOR ");
+  from = strstr(ibuff, " FROM ");
+  forwhat = strstr(ibuff, " FOR ");
   if (from) {
     *from = '\0';
     from += 6;
@@ -1715,9 +1717,10 @@ COMMAND(cmd_buy)
     }
   }
 
-  if (from)
+  if (from) {
     from = trim_space_sep(from, ' ');
-  do_buy(executor, arg_left, from, price, queue_entry->pe_info);
+  }
+  do_buy(executor, ibuff, from, price, queue_entry->pe_info);
 }
 
 COMMAND(cmd_give)
@@ -1818,4 +1821,294 @@ COMMAND(cmd_who)
     do_who_admin(executor, arg_left);
   else
     do_who_mortal(executor, arg_left);
+}
+
+#ifdef HAVE_LIBCURL
+static size_t
+req_write_callback(void *contents, size_t size, size_t nmemb, void *userp)
+{
+  struct urlreq *req = userp;
+  size_t realsize = size * nmemb;
+  sqlite3_str_append(req->body, contents, realsize);
+  if (sqlite3_str_length(req->body) >= BUFFER_LEN) {
+    /* Raise an error and abort request. */
+    req->too_big = 1;
+    return 0;
+  } else {
+    return realsize;
+  }
+}
+
+static int
+req_set_cloexec(void *clientp __attribute__((__unused__)), curl_socket_t fd,
+                curlsocktype purpose __attribute__((__unused__)))
+{
+  set_close_exec(fd);
+  return CURL_SOCKOPT_OK;
+}
+
+#endif
+
+COMMAND(cmd_fetch)
+{
+  /* Move this to a more appropriate file? */
+#ifdef HAVE_LIBCURL
+  extern CURLM *curl_handle;
+  extern int ncurl_queries;
+  struct urlreq *req;
+  CURL *handle;
+  struct curl_slist *headers = NULL;
+  dbref thing;
+  char *s;
+  const char *userpass;
+  char tbuf[BUFFER_LEN];
+  int queue_type = QUEUE_DEFAULT | (queue_entry->queue_type & QUEUE_EVENT);
+  bool post = false;
+  bool del = false;
+  bool put = false;
+
+  if (!Wizard(executor) && !has_power_by_name(executor, "Can_HTTP", NOTYPE)) {
+    notify(executor, T("Permission denied."));
+    return;
+  }
+
+  if (!args_right[1] || !*args_right[1]) {
+    notify(executor, T("What do you want to query?"));
+    return;
+  }
+
+  if (SW_ISSET(sw, SWITCH_POST)) {
+    post = true;
+  }
+
+  if (SW_ISSET(sw, SWITCH_PUT)) {
+    put = true;
+  }
+
+  if (SW_ISSET(sw, SWITCH_DELETE)) {
+    del = true;
+  }
+
+  if ((post && put) || (post && del) || (put && del)) {
+    notify(executor, "You can't make multiple requests at the same time!");
+    return;
+  }
+
+  mush_strncpy(tbuf, arg_left, sizeof tbuf);
+  s = strchr(tbuf, '/');
+  if (!s) {
+    notify(executor, T("I need to know what attribute to trigger."));
+    return;
+  }
+  *(s++) = '\0';
+  upcasestr(s);
+
+  thing = noisy_match_result(executor, tbuf, NOTYPE, MAT_EVERYTHING);
+
+  if (thing == NOTHING) {
+    return;
+  }
+
+  if (!controls(executor, thing)) {
+    notify(executor, T("Permission denied."));
+    return;
+  }
+
+  req = mush_malloc(sizeof *req, "urlreq");
+  req->enactor = enactor;
+  req->thing = thing;
+  req->queue_type = queue_type;
+  req->attrname = mush_strdup(s, "urlreq.attrname");
+  req->body = sqlite3_str_new(NULL);
+  req->too_big = 0;
+  req->pe_regs = pe_regs_create(PE_REGS_ARG | PE_REGS_Q, "cmd_fetch");
+  pe_regs_qcopy(req->pe_regs, queue_entry->pe_info->regvals);
+
+  handle = curl_easy_init();
+  curl_easy_setopt(handle, CURLOPT_PROTOCOLS,
+                   CURLPROTO_HTTP | CURLPROTO_HTTPS | CURLPROTO_DICT);
+  curl_easy_setopt(handle, CURLOPT_URL, args_right[1]);
+  curl_easy_setopt(handle, CURLOPT_VERBOSE, 0);
+  curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 1);
+  curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1);
+  curl_easy_setopt(handle, CURLOPT_SOCKOPTFUNCTION, req_set_cloexec);
+  /* 1 minute timeouts should be more than ample for our needs */
+  curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 60);
+  curl_easy_setopt(handle, CURLOPT_TIMEOUT, 60);
+  curl_easy_setopt(handle, CURLOPT_USERAGENT, "PennMUSH/1.8");
+  curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, req_write_callback);
+  curl_easy_setopt(handle, CURLOPT_WRITEDATA, req);
+  curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1);
+  curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 5);
+
+  userpass = pe_regs_get(req->pe_regs, PE_REGS_Q, "userpass");
+  if (userpass) {
+    curl_easy_setopt(handle, CURLOPT_USERPWD, userpass);
+    curl_easy_setopt(handle, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
+  }
+
+  if (post || put || del) {
+    bool postdata;
+    const char *contenttype;
+
+    if (post) {
+      curl_easy_setopt(handle, CURLOPT_POST, 1);
+    } else if (put) {
+      curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "PUT");
+    } else {
+      curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "DELETE");
+    }
+
+    postdata = args_right[2] && *args_right[2];
+
+    contenttype = pe_regs_get(req->pe_regs, PE_REGS_Q, "content-type");
+    if (contenttype) {
+      char ct_header[BUFFER_LEN];
+      snprintf(ct_header, sizeof ct_header, "Content-Type: %s", contenttype);
+      headers = curl_slist_append(headers, ct_header);
+    }
+    if (contenttype && postdata &&
+        (strstr(contenttype, "charset=utf-8") ||
+         strstr(contenttype, "charset=UTF-8"))) {
+      int ulen;
+      char *utf8 =
+        latin1_to_utf8(args_right[2], strlen(args_right[2]), &ulen, 0);
+      curl_easy_setopt(handle, CURLOPT_COPYPOSTFIELDS, utf8);
+      mush_free(utf8, "string");
+    } else if (postdata) {
+      curl_easy_setopt(handle, CURLOPT_COPYPOSTFIELDS, args_right[2]);
+    }
+  }
+
+  curl_easy_setopt(handle, CURLOPT_PRIVATE, req);
+
+  headers =
+    curl_slist_append(headers, "Accept-Charset: iso-8859-1, utf-8, us-ascii");
+  req->header_slist = headers;
+  curl_easy_setopt(handle, CURLOPT_HTTPHEADER, headers);
+
+  ncurl_queries += 1;
+
+  curl_multi_add_handle(curl_handle, handle);
+#else
+  notify(executor, T("Command disabled."));
+#endif
+}
+
+COMMAND(cmd_respond)
+{
+  const char *p;
+  struct http_request *req;
+
+  req = active_http_request;
+
+  if (!USABLE(HTTP_HANDLER) || !IsPlayer(HTTP_HANDLER)) {
+    notify(executor, T("Invalid http_handler, it should be a player."));
+  }
+
+  if (!arg_left || !*arg_left) {
+    notify(executor, T("Invalid use of @respond, please check help @respond."));
+    return;
+  }
+
+  /* Ensure only isprint()-able characters. */
+  for (p = arg_left; p && *p; p++) {
+    if (!isprint(*p)) {
+      notify(executor, T("No nonprintable characters allowed in @respond"));
+      return;
+    }
+  }
+
+  for (p = arg_right; p && *p; p++) {
+    if (!isprint(*p)) {
+      notify(executor, T("No nonprintable characters allowed in @respond"));
+      return;
+    }
+  }
+
+  if (SW_ISSET(sw, SWITCH_TYPE) && SW_ISSET(sw, SWITCH_HEADER)) {
+    notify(executor,
+           T("Invalid @respond - You can't use more than one switch!"));
+    return;
+  }
+
+  /* @respond/type */
+  if (SW_ISSET(sw, SWITCH_TYPE)) {
+    if (*arg_right) {
+      notify(executor,
+             T("Invalid @respond/type - cannot have arg_right, use {}s"));
+      return;
+    }
+    if (req) {
+      snprintf(req->ctype, MAX_COMMAND_LEN, "Content-Type: %s", arg_left);
+    } else {
+      notify_format(enactor, "(HTTP): Content-Type: %s", arg_left);
+    }
+    return;
+  }
+
+  /* @respond/header */
+  if (SW_ISSET(sw, SWITCH_HEADER)) {
+    /* Sanity checking on header name. */
+    if (!arg_left || !*arg_left || !arg_right || !*arg_right) {
+      notify(executor,
+             T("Invalid format, use @respond/header HeaderName=Value."));
+      return;
+    }
+    if (!strcasecmp(arg_left, "content-length")) {
+      notify(executor, T("You cannot set Content-Length header."));
+      return;
+    }
+    /* Only printable ascii allowed in header names. */
+    for (p = arg_left; *p; p++) {
+      if (!isascii(*p)) {
+        notify(executor, T("Invalid HTTP Header name."));
+        return;
+      }
+    }
+    if (req) {
+      safe_str(arg_left, req->headers, &(req->hp));
+      safe_str(": ", req->headers, &(req->hp));
+      safe_str(arg_right, req->headers, &(req->hp));
+
+      safe_str("\r\n", req->headers, &(req->hp));
+    } else {
+      notify_format(enactor, "(HTTP): %s: %s", arg_left, arg_right);
+    }
+    return;
+  }
+
+  /* Now we're to @respond code
+   *
+   * This format must follow \d\d\d <text>
+   */
+  if (!isdigit(arg_left[0]) || !isdigit(arg_left[1]) || !isdigit(arg_left[2]) ||
+      arg_left[3] != ' ' || !isalnum(arg_left[4])) {
+    notify(executor, T("@respond must be 3 digits, space, then text ."));
+    return;
+  }
+
+  if (*arg_right) {
+    notify(executor,
+           T("Invalid @respond/type - cannot have arg_right, use {}s"));
+    return;
+  }
+
+  for (p = arg_left; *p; p++) {
+    if (!isascii(*p)) {
+      notify(executor, T("@respond must be 3 digits, space, then text ."));
+      return;
+    }
+  }
+
+  if (strlen(arg_left) >= 40) {
+    notify(executor, T("@respond status code too long."));
+    return;
+  }
+
+  if (req) {
+    snprintf(req->code, HTTP_CODE_LEN, "HTTP/1.1 %s", arg_left);
+  } else {
+    notify_format(enactor, "(HTTP): HTTP/1.1 %s", arg_left);
+  }
 }

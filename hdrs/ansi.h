@@ -127,11 +127,11 @@ int write_raw_ansi_data(ansi_data *old, ansi_data *cur, int ansi_format,
   1 /**< Only show ANSI highlight, no colors/underline/etc */
 #define ANSI_FORMAT_16COLOR                                                    \
   2 /**< Show the full basic ANSI palette, including highlight, underline, etc \
-       */
+     */
 #define ANSI_FORMAT_XTERM256 3 /**< Use the 256 color XTERM palette */
 #define ANSI_FORMAT_HTML                                                       \
   4 /**< Show colors as HTML tags. Not currently used.                         \
-       */
+     */
 
 int define_ansi_data(ansi_data *store, const char *str);
 int write_ansi_data(ansi_data *cur, char *buff, char **bp);
@@ -146,11 +146,9 @@ void nest_ansi_data(ansi_data *old, ansi_data *cur);
 #define MARKUP_OLDANSI 'o'
 #define MARKUP_OLDANSI_STR "o"
 
-#ifndef WITHOUT_WEBSOCKETS
 #define MARKUP_WS 'w'
 #define MARKUP_WS_ALT 'W'
 #define MARKUP_WS_ALT_END 'M'
-#endif /* undef WITHOUT_WEBSOCKETS */
 
 /* Markup information necessary for ansi_string */
 
@@ -236,21 +234,19 @@ void optimize_ansi_string(ansi_string *as);
 /* Dump the penn code required to recreate the ansi_string */
 extern int dump_ansi_string(ansi_string *as, char *buff, char **bp);
 
-int ansi_pcre_copy_substring(ansi_string *as, int *ovector, int stringcount,
-                             int stringnumber, int nonempty, char *buffer,
-                             char **bp);
+int ansi_pcre_copy_substring(ansi_string *as, pcre2_match_data *md,
+                             int stringcount, int stringnumber, int nonempty,
+                             char *buffer, char **bp);
 
-int ansi_pcre_copy_named_substring(const pcre *code, ansi_string *as,
-                                   int *ovector, int stringcount,
+int ansi_pcre_copy_named_substring(const pcre2_code *code, ansi_string *as,
+                                   pcre2_match_data *md, int stringcount,
                                    const char *stringname, int nonempty,
                                    char *buffer, char **bp);
 
 /* Pueblo stuff */
-#define open_tag(x) tprintf("%c%c%s%c", TAG_START, MARKUP_HTML, x, TAG_END)
-#define close_tag(x) tprintf("%c%c/%s%c", TAG_START, MARKUP_HTML, x, TAG_END)
-#define wrap_tag(x, y)                                                         \
-  tprintf("%c%c%s%c%s%c%c/%s%c", TAG_START, MARKUP_HTML, x, TAG_END, y,        \
-          TAG_START, MARKUP_HTML, x, TAG_END)
+char *open_tag(const char *x);
+char *close_tag(const char *x);
+char *wrap_tag(const char *x, const char *y);
 
 int safe_tag(char const *a_tag, char *buf, char **bp);
 int safe_tag_cancel(char const *a_tag, char *buf, char **bp);

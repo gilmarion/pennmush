@@ -50,18 +50,13 @@ static char missing_name[ATTRIBUTE_NAME_LIMIT + 1];
 
 /*======================================================================*/
 
-slab *attrib_slab = NULL;
-
 static int real_atr_clr(dbref thinking, char const *atr, dbref player,
                         int we_are_wiping);
-
-static ATTR *alloc_atr(const void *hint);
-static void free_atr(ATTR *);
-static void atr_free_one(ATTR *);
-static ATTR *find_atr_pos_in_list(ATTR ***pos, char const *name);
+static void atr_free_one(dbref, ATTR *);
+static int find_atr_pos_in_list(dbref thing, char const *name);
 static atr_err can_create_attr(dbref player, dbref obj, char const *atr_name,
                                uint32_t flags);
-static ATTR *find_atr_in_list(ATTR *atr, char const *name);
+static ATTR *find_atr_in_list(dbref, char const *name);
 static ATTR *atr_get_with_parent(dbref obj, char const *atrname, dbref *parent,
                                  int cmd);
 static bool can_debug(dbref player, dbref victim);
@@ -98,12 +93,15 @@ good_atr_name(char const *s)
     return 0;
   if (*s == '`')
     return 0;
-  if (strstr(s, "``"))
-    return 0;
-  for (a = s; *a; a++, len++)
-    if (!atr_name_table[*a])
+  for (a = s; *a; a++, len++) {
+    if (!atr_name_table[*a]) {
       return 0;
-  if (*(s + len - 1) == '`')
+    }
+    if (*a == '`' && *(a + 1) == '`') {
+      return 0;
+    }
+  }
+  if (*(a - 1) == '`')
     return 0;
   return len <= ATTRIBUTE_NAME_LIMIT;
 }
@@ -124,20 +122,22 @@ atr_match(const char *string)
 ATTR *
 atr_sub_branch(ATTR *branch)
 {
-  char const *name, *n2;
+  char const *name;
   size_t len;
 
   name = AL_NAME(branch);
   len = strlen(name);
-  for (branch = AL_NEXT(branch); branch; branch = AL_NEXT(branch)) {
-    n2 = AL_NAME(branch);
+
+  for (branch++; AL_NAME(branch); branch++) {
+    const char *n2 = AL_NAME(branch);
     if (strlen(n2) <= len)
       return NULL;
     if (n2[len] == '`') {
-      if (!strncmp(n2, name, len))
+      if (memcmp(n2, name, len) == 0) {
         return branch;
-      else
+      } else {
         return NULL;
+      }
     }
   }
   return NULL;
@@ -152,129 +152,54 @@ atr_sub_branch(ATTR *branch)
 ATTR *
 atr_sub_branch_prev(ATTR *branch)
 {
-  char const *name, *n2;
+  char const *name;
   size_t len;
   ATTR *prev;
 
   name = AL_NAME(branch);
   len = strlen(name);
   prev = branch;
-  for (branch = AL_NEXT(branch); branch; branch = AL_NEXT(branch)) {
-    n2 = AL_NAME(branch);
+
+  for (branch++; AL_NAME(branch); branch++) {
+    const char *n2 = AL_NAME(branch);
     if (strlen(n2) <= len) {
       return NULL;
     }
     if (n2[len] == '`') {
-      if (!strncmp(n2, name, len))
+      if (memcmp(n2, name, len) == 0) {
         return prev;
-      else
+      } else {
         return NULL;
+      }
     }
     prev = branch;
   }
   return NULL;
 }
 
-/** Scan an attribute list for an attribute with the specified name.
- * This continues from whatever start point is passed in.
+/** Test to see if an attribute name is the root of another
  *
- * Attributes are stored as sorted linked lists. This means that
- * search is O(N) in the worst case. An unsuccessful search is usually
- * better than that, because we don't have to look at every attribute
- * unless you're looking for something greater than all the attributes
- * on the object. There are a couple of possibilities I've been
- * mulling over for... um... years... about ways to improve this.
- *
- * Option 1 is to change the data structure. I'd use a hybrid between
- * a standard linked list and a skip list. Most objects have under 5
- * attributes on them. With this few, a linear linked list is
- * fine. When more attribute are added, though, it would turn into a
- * skip list, with all current attributes having a depth of 1, and
- * further attributes having a randomly chosen depth with a cap of,
- * say, 5 (I'll have to work out the math to find the optimum
- * size). This will provide O(lg N) searches on objects with lots of
- * attributes and yet not take up lots of extra memory on objects with
- * only a few attributes -- a problem with using a tree structure. All
- * the code for this is in my head; I just need to sit down and write
- * it.
- *
- * Option 2 is to speed up the current lookup. There are a lot of
- * string comparisions that we don't strictly need: All attributes
- * with the same name use the same underlying storage from a string
- * pool. You can look up an attribute name and then just compare
- * pointers, saving a lot of calls to strcoll(). The string pool is
- * implemented using a red-black tree, so it needs O(lg P) string
- * comparisions + O(N) pointer equality comparisions (P is the number
- * of unique attribute names in the pool, N the number of attributes
- * on the object). Hmm. I'm not so sure that's much of an improvement
- * after all...  Let's try it out anyways and see what happens. Don't
- * expect this to be permanent, though.
- *
- * \param atr the start of the list to search from
- * \param name the attribute name to look for
- * \return the matching attribute, or NULL
+ * \param root the string to test to see if it's a root
+ * \param path the string to be tested.
+ * \return true or false
  */
-static ATTR *
-find_atr_in_list(ATTR *atr, char const *name)
+static bool
+is_atree_root(const char *root, const char *path)
 {
-#define ATR_PTR_CMP
-#ifdef ATR_PTR_CMP
-  /* New way; pointer comparisions */
-  const char *memoized;
+  size_t rootlen, pathlen;
 
-  memoized = st_find(name, &atr_names);
-  if (!memoized) /* This attribute name doesn't exist on any object */
-    return NULL;
+  rootlen = strlen(root);
+  pathlen = strlen(path);
 
-  while (atr) {
-    if (AL_NAME(atr) == memoized)
-      return atr;
-#if 0
-    /* Unfortunately, this will break under many locales, since
-       attribute list sorting uses strcoll() and not strcmp().  */
-    else if (*memoized < *AL_NAME(atr))
-      return NULL;              /* Can't be any of the remaining attributes */
-#endif
-    else
-      atr = AL_NEXT(atr);
-  }
-#else
-  /* Old way; lots of string comparisions */
-  int comp;
-
-  while (atr) {
-    comp = strcoll(name, AL_NAME(atr));
-    if (comp < 0)
-      return NULL;
-    if (comp == 0)
-      return atr;
-    atr = AL_NEXT(atr);
-  }
-#endif
-
-  return NULL;
-}
-
-/** Find the place to insert/delete an attribute with the specified name.
- * \param pos a pointer to the ATTR ** holding the list position
- * \param name the attribute name to look for
- * \return the matching attribute, or NULL if no matching attribute
- */
-static ATTR *
-find_atr_pos_in_list(ATTR ***pos, char const *name)
-{
-  int comp;
-
-  while (**pos) {
-    comp = compare_attr_names(name, AL_NAME(**pos));
-    if (comp < 0)
-      return NULL;
-    if (comp == 0)
-      return **pos;
-    *pos = &AL_NEXT(**pos);
+  if (rootlen >= pathlen) {
+    return 0;
   }
 
-  return NULL;
+  if (path[rootlen] != '`') {
+    return 0;
+  }
+
+  return memcmp(root, path, rootlen) == 0;
 }
 
 /** Convert a string of attribute flags to a bitmask.
@@ -396,11 +321,10 @@ can_read_attr_internal(dbref player, dbref obj, ATTR *atr)
      */
     if (target == ancestor)
       ancestor = NOTHING;
-    atr = List(target);
     /* Check along the branch for permissions... */
     for (p = strchr(name, '`'); p; p = strchr(p + 1, '`')) {
       *p = '\0';
-      atr = find_atr_in_list(atr, name);
+      atr = find_atr_in_list(target, name);
       if (!atr || (target != obj && AF_Private(atr))) {
         *p = '`';
         goto continue_target;
@@ -414,7 +338,7 @@ can_read_attr_internal(dbref player, dbref obj, ATTR *atr)
     }
 
     /* Now actually find the attribute. */
-    atr = find_atr_in_list(atr, name);
+    atr = find_atr_in_list(target, name);
     if (atr)
       return 1;
 
@@ -463,10 +387,9 @@ can_write_attr_internal(dbref player, dbref obj, ATTR *atr, int safe)
   if (Cannot_Write_This_Attr(player, atr, safe))
     return 0;
   strcpy(missing_name, AL_NAME(atr));
-  atr = List(obj);
   for (p = strchr(missing_name, '`'); p; p = strchr(p + 1, '`')) {
     *p = '\0';
-    atr = find_atr_in_list(atr, missing_name);
+    atr = find_atr_in_list(obj, missing_name);
     if (!atr)
       return 0;
     if (Cannot_Write_This_Attr(player, atr, safe)) {
@@ -490,7 +413,7 @@ can_write_attr_internal(dbref player, dbref obj, ATTR *atr, int safe)
 bool
 can_edit_attr(dbref player, dbref thing, const char *attrname)
 {
-  ATTR *ptr = find_atr_in_list(List(thing), attrname);
+  ATTR *ptr = find_atr_in_list(thing, attrname);
   if (ptr)
     return Can_Write_Attr(player, thing, ptr);
   else
@@ -539,7 +462,7 @@ can_create_attr(dbref player, dbref obj, char const *atr_name, uint32_t flags)
   for (p = strchr(missing_name, '`'); p; p = strchr(p + 1, '`')) {
     *p = '\0';
     if (atr != &tmpatr)
-      atr = find_atr_in_list(atr, missing_name);
+      atr = find_atr_in_list(obj, missing_name);
     if (!atr) {
       atr = &tmpatr;
       AL_CREATOR(atr) = Owner(player);
@@ -576,39 +499,240 @@ can_create_attr(dbref player, dbref obj, char const *atr_name, uint32_t flags)
 
 /*======================================================================*/
 
+#define GROWTH_FACTOR 1.5 /**< Amount to increase capacity when growing. */
+#define SHRINK_FACTOR                                                          \
+  2.0 /**< Shrink when ratio of count to capacity                              \
+         is greater than this. */
+#define LINEAR_CUT_OFF                                                         \
+  32 /**< Switch to binary search when at least                                \
+        this many attributes are on an                                         \
+        object. Benchmarking shows binary is                                   \
+        slower before this point. */
+
+/** Comparison function to use with bsearch() on an attribute
+    array. */
+static int
+atr_comp(const void *pa, const void *pb)
+{
+  const ATTR *a = pa;
+  const ATTR *b = pb;
+  return strcmp(AL_NAME(a), AL_NAME(b));
+}
+
+/** Search an attribute list for an attribute with the specified name.
+ *
+ * Attributes are stored as a sorted array. Use a linear search,
+ * switching to binary when the attribute count gets above a certain
+ * threshold. Always special case instances of 0 or 1 attribute on an
+ * object (Those two cases account for almost 6000 things on M*U*S*H)
+ *
+ * \param thing the object to search on.
+ * \param name the attribute name to look for
+ * \return the matching attribute, or NULL
+ */
+static ATTR *
+find_atr_in_list(dbref thing, char const *name)
+{
+  int count = AttrCount(thing);
+  if (count == 0) {
+    return NULL;
+  } else if (count == 1) {
+    if (strcmp(name, AL_NAME(List(thing))) == 0) {
+      return List(thing);
+    } else {
+      return NULL;
+    }
+  } else if (count < LINEAR_CUT_OFF) {
+    ATTR *a;
+    ATTR_FOR_EACH (thing, a) {
+      int c = strcmp(name, AL_NAME(a));
+      if (c == 0) {
+        return a;
+      } else if (c < 0) {
+        return NULL;
+      }
+    }
+    return NULL;
+  } else {
+    ATTR dummy;
+    AL_NAME(&dummy) = name;
+
+    return bsearch(&dummy, List(thing), AttrCount(thing), sizeof(ATTR),
+                   atr_comp);
+  }
+}
+
+/** Find the place to insert/delete an attribute with the specified name.
+ * \param thing the object to insert the attribute on
+ * \param name the attribute name to look for
+ * \return the index of the array where the attribute should go.
+ */
+static int
+find_atr_pos_in_list(dbref thing, char const *name)
+{
+  int pos = 0;
+  ATTR *a;
+  /* TODO: Binary search? */
+  ATTR_FOR_EACH (thing, a) {
+    int comp = strcmp(name, AL_NAME(a));
+    if (comp <= 0)
+      return pos;
+    pos += 1;
+  }
+
+  return pos;
+}
+
+/** Make sure an attribute array can hold at least a given number of attributes,
+ * growing if needed.
+ *
+ * \param thing the object the attributes are on
+ * \param capacity the desired capacity.
+ * \return true if it can hold at least cap attributes.
+ */
+bool
+attr_reserve(dbref thing, int cap)
+{
+  int oldcap;
+  ATTR *newattrs;
+
+  oldcap = AttrCap(thing);
+
+  if (oldcap >= cap)
+    return true;
+
+  newattrs =
+    mush_realloc(List(thing), (cap + 1) * sizeof(ATTR), "obj.attributes");
+
+  if (!newattrs) {
+    return false;
+  }
+
+  memset(newattrs + oldcap, 0, sizeof(ATTR) * (cap - oldcap + 1));
+  List(thing) = newattrs;
+  AttrCap(thing) = cap;
+  return true;
+}
+
+/** Make sure an attribute array has enough capacity to hold another attribute,
+ * and expand it if needed.
+ *
+ * \param thing the object the attribute is being added to.
+ * \return true if another dbref can be added.
+ */
+static bool
+atr_check_capacity(dbref thing)
+{
+  int oldcap = AttrCap(thing);
+  if (oldcap == 0) {
+    return attr_reserve(thing, 5);
+  } else if (AttrCount(thing) < oldcap) {
+    return true;
+  } else {
+    int newcap = oldcap * GROWTH_FACTOR;
+    if (newcap < 5) {
+      newcap = 5;
+    }
+    return attr_reserve(thing, newcap);
+  }
+}
+
+/** Shrink capacity if there's too much unused space.
+ *
+ * \param thing the object to shrink.
+ */
+void
+attr_shrink(dbref thing)
+{
+  ATTR *newattrs;
+  int newcap;
+
+  if (AttrCount(thing) == 0) {
+    /* No attributes, but space; Free it */
+    if (AttrCap(thing)) {
+      mush_free(List(thing), "obj.attributes");
+      List(thing) = NULL;
+      AttrCap(thing) = 0;
+    }
+    return;
+  } else if (AttrCap(thing) <= 5 ||
+             ((double) AttrCap(thing) / (double) AttrCount(thing)) <
+               SHRINK_FACTOR) {
+    return;
+  } else if (AttrCount(thing) == 1) {
+    newcap = 5;
+  } else {
+    newcap = round(AttrCount(thing) * GROWTH_FACTOR);
+  }
+
+  newattrs =
+    mush_realloc(List(thing), sizeof(ATTR) * (newcap + 1), "obj.attributes");
+  if (newattrs) {
+    List(thing) = newattrs;
+    AttrCap(thing) = newcap;
+  }
+}
+
+/** Make room for a new attribute at a given index. The attribute
+ * array must have capacity greater than its current count.
+ *
+ * \param thing the object the attributes are on
+ * \param pos the index a new attribute will go at.
+ */
+static void
+atr_move_down(dbref thing, ptrdiff_t pos)
+{
+  memmove(db[thing].list + pos + 1, db[thing].list + pos,
+          sizeof(ATTR) * (db[thing].attrcount - pos));
+}
+
+/** Shift an attribute array up to fill in a deleted attribute at a
+ *  given index.
+ *
+ * \param thing the the object the attributes are on.
+ * \param pos the position to shift everything to the right over by one.
+ */
+static void
+atr_move_up(dbref thing, ptrdiff_t pos)
+{
+  if (pos < AttrCount(thing) - 1) {
+    memmove(List(thing) + pos, List(thing) + pos + 1,
+            sizeof(ATTR) * (AttrCount(thing) - pos - 1));
+  }
+  memset(List(thing) + AttrCount(thing) - 1, 0, sizeof(ATTR));
+}
+
 /** Do the work of creating the attribute entry on an object.
  * This doesn't do any permissions checking.  You should do that yourself.
  * \param thing the object to hold the attribute
  * \param atr_name the name for the attribute
  */
 static ATTR *
-create_atr(dbref thing, char const *atr_name, const ATTR *hint)
+create_atr(dbref thing, char const *atr_name)
 {
-  ATTR *ptr, **ins;
+  ATTR *ptr;
   char const *name;
+  int pos;
+
+  /* grow the attribute array if needed */
+  if (!atr_check_capacity(thing)) {
+    return NULL;
+  }
 
   /* put the name in the string table */
   name = st_insert(atr_name, &atr_names);
-  if (!name)
-    return NULL;
-
-  /* allocate a new page, if needed */
-  ptr = alloc_atr(hint);
-  if (ptr == NULL) {
-    st_delete(name, &atr_names);
+  if (!name) {
     return NULL;
   }
+
+  pos = find_atr_pos_in_list(thing, name);
+  atr_move_down(thing, pos);
+  ptr = List(thing) + pos;
 
   /* initialize atr */
   AL_NAME(ptr) = name;
   ptr->data = NULL_CHUNK_REFERENCE;
   AL_FLAGS(ptr) = 0;
-
-  /* link it in */
-  ins = &List(thing);
-  (void) find_atr_pos_in_list(&ins, AL_NAME(ptr));
-  AL_NEXT(ptr) = *ins;
-  *ins = ptr;
   AttrCount(thing)++;
 
   return ptr;
@@ -643,35 +767,54 @@ atr_new_add(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
     do_rawlog(LT_ERR, "Bad attribute name %s on object %s", atr,
               unparse_dbref(thing));
 
+  ptr = find_atr_in_list(thing, atr);
+  if (ptr) {
+    /* Duplicate, probably because of an added root attribute.  This
+       happens when reading a database written with a different sort
+       order than this server is using. */
+    AL_FLAGS(ptr) |= flags;
+    AL_FLAGS(ptr) &= ~AF_COMMAND & ~AF_LISTEN;
+    AL_CREATOR(ptr) = player;
+
+    if (ptr->data) {
+      chunk_delete(ptr->data);
+      ptr->data = NULL_CHUNK_REFERENCE;
+    }
+
+    /* replace string with new string */
+    if (!s || !*s) {
+      /* nothing */
+    } else {
+      char *t = compress(s);
+      if (!t)
+        return;
+
+      ptr->data = chunk_create(t, strlen(t), derefs);
+      free(t);
+      set_cmd_flags(ptr);
+    }
+    return;
+  }
+
   strcpy(root_name, atr);
   if ((p = strrchr(root_name, '`'))) {
-    ATTR *root = NULL;
+    ATTR *root;
     *p = '\0';
-    root = find_atr_in_list(List(thing), root_name);
+    root = find_atr_in_list(thing, root_name);
     if (!root) {
       if (!makeroots)
         return;
       do_rawlog(LT_ERR, "Missing root attribute '%s' on object #%d!\n",
                 root_name, thing);
-      root = create_atr(thing, root_name, List(thing));
-      set_default_flags(root, 0);
-      AL_FLAGS(root) |= AF_ROOT;
-      AL_CREATOR(root) = player;
-      if (!EMPTY_ATTRS) {
-        char *t = compress(" ");
-        if (!t) {
-          mush_panic("Unable to allocate memory in atr_new_add()!");
-        }
-        root->data = chunk_create(t, strlen(t), 0);
-        free(t);
-      }
+      atr_new_add(thing, root_name, EMPTY_ATTRS ? "" : " ", player, AF_ROOT, 0,
+                  true);
     } else {
-      if (!(AL_FLAGS(root) & AF_ROOT)) /* Upgrading old database */
+      if (!AF_Root(root)) /* Upgrading old database */
         AL_FLAGS(root) |= AF_ROOT;
     }
   }
 
-  ptr = create_atr(thing, atr, List(thing));
+  ptr = create_atr(thing, atr);
   if (!ptr)
     return;
 
@@ -705,7 +848,7 @@ set_cmd_flags(ATTR *a)
   /* FALL THROUGH */
   case '$':
     for (; *p; p++) {
-      if (*p == '\\') {
+      if (*p == '\\' && *(p + 1)) {
         p++;
       } else if (*p == ':') {
         AL_FLAGS(a) |= flag;
@@ -790,7 +933,7 @@ atr_add(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
     return AE_BADNAME;
 
   /* walk the list, looking for a preexisting value */
-  ptr = find_atr_in_list(List(thing), atr);
+  ptr = find_atr_in_list(thing, atr);
 
   /* check for permission to modify existing atr */
   if (ptr && AF_Safe(ptr))
@@ -805,14 +948,13 @@ atr_add(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
       return res;
 
     strcpy(missing_name, atr);
-    ptr = List(thing);
     for (p = strchr(missing_name, '`'); p; p = strchr(p + 1, '`')) {
       *p = '\0';
 
-      root = find_atr_in_list(ptr, missing_name);
+      root = find_atr_in_list(thing, missing_name);
 
       if (!root) {
-        root = create_atr(thing, missing_name, ptr);
+        root = create_atr(thing, missing_name);
         if (!root)
           return AE_TREE;
 
@@ -838,7 +980,7 @@ atr_add(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
       *p = '`';
     }
 
-    ptr = create_atr(thing, atr, root ? root : List(thing));
+    ptr = create_atr(thing, atr);
     if (!ptr)
       return AE_ERROR;
 
@@ -885,42 +1027,51 @@ atr_add(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
 static int
 atr_clear_children(dbref player, dbref thing, ATTR *root)
 {
-  ATTR *sub, *next = NULL, *prev;
   int skipped = 0;
   size_t len;
-  const char *name, *n2;
+  const char *name;
+  ATTR *sub;
 
-  prev = atr_sub_branch_prev(root);
-  if (!prev)
+  if (!root)
     return 1;
 
   name = AL_NAME(root);
   len = strlen(name);
-  for (sub = AL_NEXT(prev); sub; sub = next) {
-    n2 = AL_NAME(sub);
-    if (strlen(n2) < (len + 1) || n2[len] != '`' || strncmp(n2, name, len))
+
+  sub = atr_sub_branch_prev(root);
+
+  if (!sub) {
+    return 1;
+  }
+  sub += 1;
+
+  while (AL_NAME(sub)) {
+    const char *n2 = AL_NAME(sub);
+    size_t len2 = strlen(n2);
+    if (len2 < (len + 1) || n2[len] != '`' || strncmp(n2, name, len) != 0)
       break;
-    if (AL_FLAGS(sub) & AF_ROOT) {
+    if (AF_Root(sub)) {
       if (!atr_clear_children(player, thing, sub)) {
         skipped++;
-        next = AL_NEXT(sub);
-        prev = sub;
+        while (AL_NAME(++sub)) {
+          const char *n3 = AL_NAME(sub);
+          if (!n3 || strlen(n3) < (len2 + 1) || n3[len2] != '`' ||
+              strncmp(n2, n3, len2) != 0) {
+            break;
+          }
+        }
         continue;
       }
     }
 
-    next = AL_NEXT(sub);
-
     if (!Can_Write_Attr(player, thing, sub)) {
       skipped++;
-      prev = sub;
+      sub++;
       continue;
     }
 
     /* Can safely delete attribute.  */
-    AL_NEXT(prev) = next;
-    atr_free_one(sub);
-    AttrCount(thing)--;
+    atr_free_one(thing, sub);
   }
 
   return !skipped;
@@ -938,25 +1089,26 @@ atr_clear_children(dbref player, dbref thing, ATTR *root)
 static atr_err
 real_atr_clr(dbref thing, char const *atr, dbref player, int we_are_wiping)
 {
-  ATTR *ptr, **prev;
   int can_clear = 1;
+  ATTR *ptr;
 
-  prev = &List(thing);
-  ptr = find_atr_pos_in_list(&prev, atr);
+  ptr = find_atr_in_list(thing, atr);
 
-  if (!ptr)
+  if (!ptr) {
     return AE_NOTFOUND;
-
-  if (ptr && AF_Safe(ptr))
+  }
+  if (AF_Safe(ptr)) {
     return AE_SAFE;
-  if (!Can_Write_Attr(player, thing, ptr))
+  }
+  if (!Can_Write_Attr(player, thing, ptr)) {
     return AE_ERROR;
+  }
 
-  if ((AL_FLAGS(ptr) & AF_ROOT) && !we_are_wiping)
+  if (AF_Root(ptr) && !we_are_wiping)
     return AE_TREE;
 
   /* We only hit this if wiping. */
-  if (AL_FLAGS(ptr) & AF_ROOT)
+  if (AF_Root(ptr))
     can_clear = atr_clear_children(player, thing, ptr);
 
   if (can_clear) {
@@ -967,17 +1119,16 @@ real_atr_clr(dbref thing, char const *atr, dbref player, int we_are_wiping)
 
     if (!IsPlayer(thing) && !AF_Nodump(ptr))
       ModTime(thing) = mudtime;
-    *prev = AL_NEXT(ptr);
-    atr_free_one(ptr);
-    AttrCount(thing)--;
+
+    atr_free_one(thing, ptr);
 
     /* If this was the only leaf of a tree, clear the AF_ROOT flag from
      * the parent. */
     if ((p = strrchr(root_name, '`'))) {
       ATTR *root;
-      *p = '\0';
 
-      root = find_atr_in_list(List(thing), root_name);
+      *p = '\0';
+      root = find_atr_in_list(thing, root_name);
       *p = '`';
 
       if (!root) {
@@ -1074,7 +1225,6 @@ atr_get_with_parent(dbref obj, char const *atrname, dbref *parent, int cmd)
        */
       if (target == ancestor)
         ancestor = NOTHING;
-      atr = List(target);
 
       /* If we're looking at a parent/ancestor, then we
        * need to check the branch path for privacy. We also
@@ -1082,7 +1232,7 @@ atr_get_with_parent(dbref obj, char const *atrname, dbref *parent, int cmd)
       if (target != obj || cmd) {
         for (p = strchr(name, '`'); p; p = strchr(p + 1, '`')) {
           *p = '\0';
-          atr = find_atr_in_list(atr, name);
+          atr = find_atr_in_list(target, name);
           *p = '`';
           if (!atr)
             goto continue_target;
@@ -1097,7 +1247,7 @@ atr_get_with_parent(dbref obj, char const *atrname, dbref *parent, int cmd)
       }
 
       /* Now actually find the attribute. */
-      atr = find_atr_in_list(atr, name);
+      atr = find_atr_in_list(target, name);
       if (atr) {
         if (target != obj && AF_Private(atr))
           return NULL;
@@ -1120,7 +1270,7 @@ atr_get_with_parent(dbref obj, char const *atrname, dbref *parent, int cmd)
 
     /* Try the alias, too... */
     atr = atr_match(atrname);
-    if (!atr || !strcmp(name, AL_NAME(atr)))
+    if (!atr || strcmp(name, AL_NAME(atr)) == 0)
       break;
     strcpy(name, AL_NAME(atr));
   }
@@ -1148,17 +1298,17 @@ atr_get_noparent(dbref thing, char const *atr)
     return NULL;
 
   /* try real name */
-  ptr = find_atr_in_list(List(thing), atr);
+  ptr = find_atr_in_list(thing, atr);
   if (ptr)
     return ptr;
 
   ptr = atr_match(atr);
-  if (!ptr || !strcmp(atr, AL_NAME(ptr)))
+  if (!ptr || strcmp(atr, AL_NAME(ptr)) == 0)
     return NULL;
   atr = AL_NAME(ptr);
 
   /* try alias */
-  ptr = find_atr_in_list(List(thing), atr);
+  ptr = find_atr_in_list(thing, atr);
   if (ptr)
     return ptr;
 
@@ -1172,24 +1322,23 @@ atr_get_noparent(dbref thing, char const *atr)
  * \param player the enactor.
  * \param thing the object containing the attribute.
  * \param name the pattern to match against the attribute name.
- * \param mortal only fetch mortal-visible attributes?
- * \param regexp is name a regexp, rather than a glob pattern?
+ * \param flags flags to control matching and ordering.
  * \param func the function to call for each matching attribute.
  * \param args additional arguments to pass to the function.
  * \return the sum of the return values of the functions called.
  */
 int
-atr_iter_get(dbref player, dbref thing, const char *name, int mortal,
-             int regexp, aig_func func, void *args)
+atr_iter_get(dbref player, dbref thing, const char *name, unsigned flags,
+             aig_func func, void *args)
 {
-  ATTR *ptr, **indirect;
-  int result;
+  ATTR *ptr;
+  int result = 0;
   size_t len;
+  extern bool in_wipe;
 
-  result = 0;
   if (!name || !*name) {
-    if (regexp) {
-      regexp = 0;
+    if (flags & AIG_REGEX) {
+      flags &= ~AIG_REGEX;
       name = "**";
     } else {
       name = "*";
@@ -1199,23 +1348,97 @@ atr_iter_get(dbref player, dbref thing, const char *name, int mortal,
 
   /* Must check name[len-1] first as wildcard_count() can destructively modify
    * name */
-  if (!regexp && name[len - 1] != '`' &&
+  if (!(flags & AIG_REGEX) && name[len - 1] != '`' &&
       wildcard_count((char *) name, 1) != -1) {
-    ptr = atr_get_noparent(thing, strupper(name));
-    if (ptr && (mortal ? Is_Visible_Attr(thing, ptr)
-                       : Can_Read_Attr(player, thing, ptr)))
+    char abuff[BUFFER_LEN];
+    ptr = atr_get_noparent(thing, strupper_r(name, abuff, sizeof abuff));
+    if (ptr && ((flags & AIG_MORTAL) ? Is_Visible_Attr(thing, ptr)
+                                     : Can_Read_Attr(player, thing, ptr)))
       result = func(player, thing, NOTHING, name, ptr, args);
-  } else {
-    indirect = &List(thing);
-    while (*indirect) {
-      ptr = *indirect;
-      if ((mortal ? Is_Visible_Attr(thing, ptr)
-                  : Can_Read_Attr(player, thing, ptr)) &&
-          (regexp ? quick_regexp_match(name, AL_NAME(ptr), 0, NULL)
-                  : atr_wild(name, AL_NAME(ptr))))
-        result += func(player, thing, NOTHING, name, ptr, args);
-      if (ptr == *indirect)
-        indirect = &AL_NEXT(ptr);
+  } else if (AttrCount(thing)) {
+    pcre2_code *re = NULL;
+    pcre2_match_data *md = NULL;
+    int errcode;
+    PCRE2_SIZE erroffset;
+
+    if (flags & AIG_REGEX) {
+      re = pcre2_compile((const PCRE2_UCHAR *) name, len,
+                         re_compile_flags | PCRE2_CASELESS, &errcode,
+                         &erroffset, re_compile_ctx);
+      if (!re) {
+        return 0;
+      }
+    } else {
+      /* Compile wildcard to regexp */
+      PCRE2_UCHAR *as_re = NULL;
+      PCRE2_SIZE rlen;
+      char *glob;
+
+      if (name[len - 1] == '`') {
+        glob = sqlite3_mprintf("%s*", name);
+        len += 1;
+      } else {
+        glob = sqlite3_mprintf("%s", name);
+      }
+
+      if (pcre2_pattern_convert((const PCRE2_UCHAR *) glob, len,
+                                PCRE2_CONVERT_GLOB, &as_re, &rlen,
+                                glob_convert_ctx) == 0) {
+        re = pcre2_compile(as_re, rlen, re_compile_flags | PCRE2_CASELESS,
+                           &errcode, &erroffset, re_compile_ctx);
+        pcre2_converted_pattern_free(as_re);
+      }
+      sqlite3_free(glob);
+    }
+    if (re) {
+      flags |= AIG_REGEX;
+      pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+      md = pcre2_match_data_create_from_pattern(re, NULL);
+    }
+
+    ATTR_FOR_EACH (thing, ptr) {
+      if (cpu_time_limit_hit)
+        break;
+      if (strchr(AL_NAME(ptr), '`')) {
+        continue;
+      }
+      if (((flags & AIG_MORTAL) ? Is_Visible_Attr(thing, ptr)
+                                : Can_Read_Attr(player, thing, ptr)) &&
+          ((flags & AIG_REGEX)
+             ? qcomp_regexp_match(re, md, AL_NAME(ptr), PCRE2_ZERO_TERMINATED)
+             : atr_wild(name, AL_NAME(ptr)))) {
+        int r = func(player, thing, NOTHING, name, ptr, args);
+        result += r;
+        if (r && in_wipe) {
+          ptr -= 1;
+          continue;
+        }
+      }
+      if (AL_FLAGS(ptr) & AF_ROOT) {
+        ATTR *prev = ptr;
+        for (ptr = atr_sub_branch(ptr);
+             AL_NAME(ptr) && is_atree_root(AL_NAME(prev), AL_NAME(ptr));
+             ptr++) {
+          if (((flags & AIG_MORTAL) ? Is_Visible_Attr(thing, ptr)
+                                    : Can_Read_Attr(player, thing, ptr)) &&
+              ((flags & AIG_REGEX) ? qcomp_regexp_match(re, md, AL_NAME(ptr),
+                                                        PCRE2_ZERO_TERMINATED)
+                                   : atr_wild(name, AL_NAME(ptr)))) {
+            int r = func(player, thing, NOTHING, name, ptr, args);
+            result += r;
+            if (r && in_wipe) {
+              ptr -= 1;
+            }
+          }
+        }
+        ptr = prev;
+      }
+    }
+    if (re) {
+      pcre2_code_free(re);
+    }
+    if (md) {
+      pcre2_match_data_free(md);
     }
   }
 
@@ -1243,20 +1466,21 @@ atr_count_helper(dbref player __attribute__((__unused__)),
  * \param thing the object containing the attribute.
  * \param name the pattern to match against the attribute name.
  * \param doparent count parent attrbutes as well?
+ * \param flags atr_iter_get flags.
  * \param mortal only fetch mortal-visible attributes?
  * \param regexp is name a regexp, rather than a glob pattern?
  * \return the count of matching attributes
  */
 int
 atr_pattern_count(dbref player, dbref thing, const char *name, int doparent,
-                  int mortal, int regexp)
+                  unsigned flags)
 {
-  if (doparent)
-    return atr_iter_get_parent(player, thing, name, mortal, regexp,
-                               atr_count_helper, NULL);
-  else
-    return atr_iter_get(player, thing, name, mortal, regexp, atr_count_helper,
-                        NULL);
+  if (doparent) {
+    return atr_iter_get_parent(player, thing, name, flags, atr_count_helper,
+                               NULL);
+  } else {
+    return atr_iter_get(player, thing, name, flags, atr_count_helper, NULL);
+  }
 }
 
 /** Apply a function to a set of attributes, including inherited ones.
@@ -1266,8 +1490,7 @@ atr_pattern_count(dbref player, dbref thing, const char *name, int doparent,
  * \param player the enactor.
  * \param thing the object containing the attribute.
  * \param name the pattern to match against the attribute name.
- * \param mortal only fetch mortal-visible attributes?
- * \param regexp is name a regexp pattern, rather than a glob pattern?
+ * \param flags flags to control matching.
  * \param func the function to call for each matching attribute, with
  *  a pointer to the dbref of the object the attribute is really on passed
  *  as the function's args argument.
@@ -1275,18 +1498,18 @@ atr_pattern_count(dbref player, dbref thing, const char *name, int doparent,
  * \return the sum of the return values of the functions called.
  */
 int
-atr_iter_get_parent(dbref player, dbref thing, const char *name, int mortal,
-                    int regexp, aig_func func, void *args)
+atr_iter_get_parent(dbref player, dbref thing, const char *name, unsigned flags,
+                    aig_func func, void *args)
 {
-  ATTR *ptr, *lastbranch, **indirect;
+  ATTR *ptr;
   int result;
   size_t len;
   dbref parent = NOTHING;
 
   result = 0;
   if (!name || !*name) {
-    if (regexp) {
-      regexp = 0;
+    if (flags & AIG_REGEX) {
+      flags &= ~AIG_REGEX;
       name = "**";
     } else {
       name = "*";
@@ -1296,57 +1519,130 @@ atr_iter_get_parent(dbref player, dbref thing, const char *name, int mortal,
 
   /* Must check name[len-1] first as wildcard_count() can destructively modify
    * name */
-  if (!regexp && name[len - 1] != '`' &&
+  if (!(flags & AIG_REGEX) && name[len - 1] != '`' &&
       wildcard_count((char *) name, 1) != -1) {
-    ptr = atr_get_with_parent(thing, strupper(name), &parent, 0);
-    if (ptr && (mortal ? Is_Visible_Attr(parent, ptr)
-                       : Can_Read_Attr(player, parent, ptr)))
+    char abuff[BUFFER_LEN];
+    ptr = atr_get_with_parent(thing, strupper_r(name, abuff, sizeof abuff),
+                              &parent, 0);
+    if (ptr && ((flags & AIG_MORTAL) ? Is_Visible_Attr(parent, ptr)
+                                     : Can_Read_Attr(player, parent, ptr)))
       result = func(player, thing, parent, name, ptr, args);
   } else {
     StrTree seen;
     int parent_depth;
+    pcre2_code *re = NULL;
+    pcre2_match_data *md = NULL;
+    int errcode;
+    PCRE2_SIZE erroffset;
+
+    if (flags & AIG_REGEX) {
+      re = pcre2_compile((const PCRE2_UCHAR *) name, len,
+                         re_compile_flags | PCRE2_CASELESS, &errcode,
+                         &erroffset, re_compile_ctx);
+      if (!re) {
+        return 0;
+      }
+    } else {
+      /* Compile wildcard to regexp */
+      PCRE2_UCHAR *as_re = NULL;
+      PCRE2_SIZE rlen;
+      char *glob;
+
+      if (name[len - 1] == '`') {
+        glob = sqlite3_mprintf("%s*", name);
+        len += 1;
+      } else {
+        glob = sqlite3_mprintf("%s", name);
+      }
+
+      if (pcre2_pattern_convert((const PCRE2_UCHAR *) glob, len,
+                                PCRE2_CONVERT_GLOB, &as_re, &rlen,
+                                glob_convert_ctx) == 0) {
+        re = pcre2_compile(as_re, rlen, re_compile_flags | PCRE2_CASELESS,
+                           &errcode, &erroffset, re_compile_ctx);
+        pcre2_converted_pattern_free(as_re);
+      }
+      sqlite3_free(glob);
+    }
+    if (re) {
+      flags |= AIG_REGEX;
+      pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
+      md = pcre2_match_data_create_from_pattern(re, NULL);
+    }
+
     st_init(&seen, "AttrsSeenTree");
     for (parent_depth = MAX_PARENTS + 1, parent = thing;
-         parent_depth-- && parent != NOTHING; parent = Parent(parent)) {
-      ptr = NULL;
-      lastbranch = List(parent);
-      for (indirect = &List(parent); *indirect; indirect = &AL_NEXT(ptr)) {
-        ptr = *indirect;
-        if (!strchr(AL_NAME(ptr), '`'))
-          lastbranch = ptr;
+         parent_depth-- && parent != NOTHING && !cpu_time_limit_hit;
+         parent = Parent(parent)) {
+      ATTR_FOR_EACH (parent, ptr) {
+        if (cpu_time_limit_hit)
+          break;
         if (!st_find(AL_NAME(ptr), &seen)) {
           st_insert(AL_NAME(ptr), &seen);
           if (parent != thing) {
             if (AF_Private(ptr))
               continue;
-            if (strchr(AL_NAME(ptr), '`')) {
-              /* We need to check all the branches of the tree for no_inherit */
-              char bname[BUFFER_LEN];
-              char *p;
-              ATTR *branch;
-              bool skip = 0;
-
-              strcpy(bname, AL_NAME(ptr));
-              for (p = strchr(bname, '`'); p; p = strchr(p + 1, '`')) {
-                *p = '\0';
-                branch = find_atr_in_list(lastbranch, bname);
-                *p = '`';
-                if (branch && AF_Private(branch)) {
-                  skip = 1;
-                  break;
-                }
-              }
-              if (skip)
-                continue;
-            }
           }
-          if ((mortal ? Is_Visible_Attr(parent, ptr)
-                      : Can_Read_Attr(player, parent, ptr)) &&
-              (regexp ? quick_regexp_match(name, AL_NAME(ptr), 0, NULL)
-                      : atr_wild(name, AL_NAME(ptr))))
+
+          if (((flags & AIG_MORTAL) ? Is_Visible_Attr(parent, ptr)
+                                    : Can_Read_Attr(player, parent, ptr)) &&
+              ((flags & AIG_REGEX) ? qcomp_regexp_match(re, md, AL_NAME(ptr),
+                                                        PCRE2_ZERO_TERMINATED)
+                                   : atr_wild(name, AL_NAME(ptr)))) {
             result += func(player, thing, parent, name, ptr, args);
+          }
+          if (AL_FLAGS(ptr) & AF_ROOT) {
+            ATTR *prev = ptr;
+            for (ptr = atr_sub_branch(ptr);
+                 AL_NAME(ptr) && is_atree_root(AL_NAME(prev), AL_NAME(ptr));
+                 ptr++) {
+              if (AF_Private(ptr) && thing != parent) {
+                continue;
+              }
+
+              if (strchr(AL_NAME(ptr), '`')) {
+                /* We need to check all the branches of the tree for no_inherit
+                 */
+                char bname[BUFFER_LEN];
+                char *p;
+                ATTR *branch;
+                bool skip = 0;
+
+                strcpy(bname, AL_NAME(ptr));
+                for (p = strchr(bname, '`'); p; p = strchr(p + 1, '`')) {
+                  *p = '\0';
+                  branch = find_atr_in_list(parent, bname);
+                  *p = '`';
+                  if (branch && AF_Private(branch)) {
+                    skip = 1;
+                    break;
+                  }
+                }
+                if (skip)
+                  continue;
+              }
+
+              if (!st_find(AL_NAME(ptr), &seen) &&
+                  ((flags & AIG_MORTAL) ? Is_Visible_Attr(thing, ptr)
+                                        : Can_Read_Attr(player, thing, ptr)) &&
+                  ((flags & AIG_REGEX)
+                     ? qcomp_regexp_match(re, md, AL_NAME(ptr),
+                                          PCRE2_ZERO_TERMINATED)
+                     : atr_wild(name, AL_NAME(ptr)))) {
+                st_insert(AL_NAME(ptr), &seen);
+                result += func(player, thing, parent, name, ptr, args);
+              }
+            }
+            ptr = prev;
+          }
         }
       }
+    }
+    if (re) {
+      pcre2_code_free(re);
+    }
+    if (md) {
+      pcre2_match_data_free(md);
     }
     st_flush(&seen);
   }
@@ -1366,21 +1662,23 @@ atr_free_all(dbref thing)
 {
   ATTR *ptr;
 
-  if (!List(thing))
+  if (AttrCap(thing) == 0) {
     return;
+  }
 
-  if (!IsPlayer(thing))
+  if (!IsPlayer(thing) && AttrCount(thing)) {
     ModTime(thing) = mudtime;
+  }
 
-  while ((ptr = List(thing))) {
-    List(thing) = AL_NEXT(ptr);
-
+  ATTR_FOR_EACH (thing, ptr) {
     if (ptr->data)
       chunk_delete(ptr->data);
     st_delete(AL_NAME(ptr), &atr_names);
-
-    free_atr(ptr);
   }
+
+  mush_free(List(thing), "obj.attributes");
+  AttrCount(thing) = AttrCap(thing) = 0;
+  List(thing) = NULL;
 }
 
 /** Copy all of the attributes from one object to another.
@@ -1398,80 +1696,17 @@ atr_cpy(dbref dest, dbref source)
   int max_attrs;
 
   max_attrs = (Many_Attribs(dest) ? HARD_MAX_ATTRCOUNT : MAX_ATTRCOUNT);
-  List(dest) = NULL;
-  for (ptr = List(source); ptr; ptr = AL_NEXT(ptr))
-    if (!AF_Nocopy(ptr) && (AttrCount(dest) < max_attrs)) {
+  attr_reserve(dest, AttrCount(source));
+
+  ATTR_FOR_EACH (source, ptr) {
+    if (AttrCount(dest) > max_attrs) {
+      break;
+    }
+    if (!AF_Nocopy(ptr)) {
       atr_new_add(dest, AL_NAME(ptr), atr_value(ptr), AL_CREATOR(ptr),
                   AL_FLAGS(ptr), AL_DEREFS(ptr), 0);
     }
-}
-
-/** Structure for keeping track of which attributes have appeared
- * on children when doing command matching. */
-typedef struct used_attr {
-  struct used_attr *next; /**< Next attribute in list */
-  char const *name;       /**< The name of the attribute */
-  int no_prog;            /**< Was it AF_NOPROG */
-} UsedAttr;
-
-/** Find an attribute in the list of seen attributes.
- * Since attributes are checked in collation order, the pointer to the
- * list is updated to reflect the current search position.
- * For efficiency of insertions, the pointer used is a trailing pointer,
- * pointing at the pointer to the next used struct.
- * To allow a useful return code, the pointer used is actually a pointer
- * to the pointer mentioned above.  Yes, I know three-star coding is bad,
- * but I have good reason, here.
- * \param prev the pointer to the pointer to the pointer to the next
- *             used attribute.
- * \param name the name of the attribute to look for.
- * \retval 0 the attribute was not in the list,
- *           **prev now points to the next atfer.
- * \retval 1 the attribute was in the list,
- *           **prev now points to the entry for it.
- */
-static int
-find_attr(UsedAttr ***prev, char const *name)
-{
-  int comp;
-
-  comp = 1;
-  while (**prev) {
-    comp = compare_attr_names(name, prev[0][0]->name);
-    if (comp <= 0)
-      break;
-    *prev = &prev[0][0]->next;
   }
-  return comp == 0;
-}
-
-/** Insert an attribute in the list of seen attributes.
- * Since attributes are inserted in collation order, an updated insertion
- * point is returned (so subsequent calls don't have to go hunting as far).
- * \param prev the pointer to the pointer to the attribute list.
- * \param name the name of the attribute to insert.
- * \param no_prog the AF_NOPROG value from the attribute.
- * \return the pointer to the pointer to the next attribute after
- *         the one inserted.
- */
-static UsedAttr **
-use_attr(UsedAttr **prev, char const *name, uint32_t no_prog)
-{
-  int found;
-  UsedAttr *used;
-
-  found = find_attr(&prev, name);
-  if (!found) {
-    used = mush_malloc(sizeof *used, "used_attr");
-    used->next = *prev;
-    used->name = name;
-    used->no_prog = 0;
-    *prev = used;
-  }
-  prev[0]->no_prog |= no_prog;
-  /* do_rawlog(LT_TRACE, "Recorded %s: %d -> %d", name,
-     no_prog, prev[0]->no_prog); */
-  return &prev[0]->next;
 }
 
 static bool
@@ -1503,6 +1738,91 @@ can_debug(dbref player, dbref victim)
   }
   mush_free(aval, "atrval.can_debug");
   return success;
+}
+
+/** Match input against a $command or ^listen attribute.
+ * This function attempts to match a string against either an $-command
+ * or ^listens on an object. Matches may be glob or regex matches,
+ * depending on the attribute's flags. With the reasonably safe assumption
+ * that most of the matches are going to fail, the faster non-capturing
+ * glob match is done first, and the capturing version only called when
+ * we already know it'll match. Due to the way PCRE works, there's no
+ * advantage to doing something similar for regular expression matches.
+ *
+ * This is a helper function used by one_comm_match, atr_comm_match, and
+ * others.
+ */
+int
+atr_single_match_r(ATTR *ptr, int flag_mask, int end, const char *input,
+                   char *args[], char *match_space, int match_space_len,
+                   char cmd_buff[], PE_REGS *pe_regs)
+{
+  char buff[BUFFER_LEN];
+  char *atrval;
+  int i, j;
+  int match_found = 0;
+
+  if (!ptr) {
+    return 0;
+  }
+
+  if (!(AL_FLAGS(ptr) & flag_mask)) {
+    return 0;
+  }
+
+  /* atr_value returns a static buffer, but we won't be calling uncompress
+   * again.
+   */
+  atrval = atr_value(ptr);
+
+  if (!atrval || !atrval[0] || !atrval[1]) {
+    return 0;
+  }
+
+  if (atrval[0] != '^' && atrval[0] != '$') {
+    return 0;
+  }
+  /* Find and copy the pattern (regexp or wild) to buff.
+   * Convert \:s into :, but leave all other \s alone. And
+   * make sure we don't trip over foo\\:, which isn't escaping :.
+   */
+  for (i = 1, j = 0; atrval[i] && atrval[i] != end; i++) {
+    if (atrval[i] == '\\' && atrval[i + 1]) {
+      if (atrval[i + 1] == end) {
+        i++;
+      } else {
+        buff[j++] = atrval[i++];
+      }
+    }
+    buff[j++] = atrval[i];
+  }
+  buff[j] = '\0';
+
+  /* at this point, atrval[i] should be the separating ':'.
+   * If it's not, this ain't an $ or ^-pattern.
+   */
+  if (!atrval[i]) {
+    return 0;
+  }
+  i++;
+
+  if (cmd_buff) {
+    strncpy(cmd_buff, atrval + i, BUFFER_LEN);
+  }
+
+  if (AF_Regexp(ptr)) {
+    if (regexp_match_case_r(buff, input, AF_Case(ptr), args, MAX_STACK_ARGS,
+                            match_space, match_space_len, pe_regs,
+                            PE_REGS_ARG)) {
+      match_found = 1;
+    }
+  } else {
+    if (wild_match_case_r(buff, input, AF_Case(ptr), args, MAX_STACK_ARGS,
+                          match_space, match_space_len, pe_regs, PE_REGS_ARG)) {
+      match_found = 1;
+    }
+  }
+  return match_found;
 }
 
 /** Match input against a $command or ^listen attribute.
@@ -1544,19 +1864,15 @@ atr_comm_match(dbref thing, dbref player, int type, int end, char const *str,
   int parent_depth;
   char *args[MAX_STACK_ARGS];
   PE_REGS *pe_regs = NULL;
-  char tbuf1[BUFFER_LEN];
-  char tbuf2[BUFFER_LEN];
-  char *s;
+  char cmd_buff[BUFFER_LEN];
   int match, match_found;
-  UsedAttr *used_list, **prev;
-  ATTR *skip[ATTRIBUTE_NAME_LIMIT / 2];
-  int skipcount;
   int lock_checked = !check_locks;
   char match_space[BUFFER_LEN * 2];
   ssize_t match_space_len = BUFFER_LEN * 2;
   NEW_PE_INFO *pe_info;
   dbref current = thing, next = NOTHING;
   int parent_count = 0;
+  StrTree seen, nocmd_roots, private_attrs;
 
   /* check for lots of easy ways out */
   if (type != '$' && type != '^')
@@ -1578,120 +1894,131 @@ atr_comm_match(dbref thing, dbref player, int type, int end, char const *str,
     }
   }
   match = 0;
-  used_list = NULL;
-  prev = &used_list;
 
   pe_info = make_pe_info("pe_info-atr_comm_match");
-  if (from_queue && from_queue->pe_info && *from_queue->pe_info->cmd_raw)
-    strcpy(pe_info->cmd_raw, from_queue->pe_info->cmd_raw);
-  else
-    strcpy(pe_info->cmd_raw, str);
+  if (from_queue && from_queue->pe_info && *from_queue->pe_info->cmd_raw) {
+    pe_info->cmd_raw = mush_strdup(from_queue->pe_info->cmd_raw, "string");
+  } else {
+    pe_info->cmd_raw = mush_strdup(str, "string");
+  }
 
-  if (from_queue && from_queue->pe_info && *from_queue->pe_info->cmd_evaled)
-    strcpy(pe_info->cmd_evaled, from_queue->pe_info->cmd_evaled);
-  else
-    strcpy(pe_info->cmd_evaled, str);
-
-  skipcount = 0;
+  if (from_queue && from_queue->pe_info && *from_queue->pe_info->cmd_evaled) {
+    pe_info->cmd_evaled =
+      mush_strdup(from_queue->pe_info->cmd_evaled, "string");
+  } else {
+    pe_info->cmd_evaled = mush_strdup(str, "string");
+  }
 
   if (!just_match) {
     pe_regs = pe_regs_create(PE_REGS_ARG, "atr_comm_match");
     pe_regs_copystack(pe_regs, pe_regs_parent, PE_REGS_ARG, 1);
   }
 
+  st_init(&seen, "AttrsSeenTree");
+  st_init(&nocmd_roots, "AttrsSeenTree");
+  st_init(&private_attrs, "AttrsSeenTree");
+
   do {
     next =
       parent_depth ? next_parent(thing, current, &parent_count, NULL) : NOTHING;
-    prev = &used_list;
 
-    /* do_rawlog(LT_TRACE, "Searching %s:", Name(current)); */
-    for (ptr = List(current); ptr; ptr = AL_NEXT(ptr)) {
-      if (skipcount && ptr == skip[skipcount - 1]) {
-        size_t len = strrchr(AL_NAME(ptr), '`') - AL_NAME(ptr);
-        while (AL_NEXT(ptr) && strlen(AL_NAME(AL_NEXT(ptr))) > len &&
-               AL_NAME(AL_NEXT(ptr))[len] == '`') {
-          ptr = AL_NEXT(ptr);
-          /* do_rawlog(LT_TRACE, "  Skipping %s", AL_NAME(ptr)); */
-        }
-        skipcount--;
-        continue;
-      }
-      if (current != thing) {
-        /* Parent */
-        if (AF_Private(ptr)) {
-          /* do_rawlog(LT_TRACE, "Private %s:", AL_NAME(ptr)); */
-          skip[skipcount] = atr_sub_branch(ptr);
-          if (skip[skipcount])
-            skipcount++;
+    st_flush(&private_attrs);
+
+    ATTR_FOR_EACH (current, ptr) {
+      if (cpu_time_limit_hit)
+        break;
+      if (current == thing) {
+        if (st_find(AL_NAME(ptr), &nocmd_roots)) {
           continue;
         }
-        if (find_attr(&prev, AL_NAME(ptr))) {
-          /* do_rawlog(LT_TRACE, "Found %s:", AL_NAME(ptr)); */
-          if (prev[0]->no_prog || AF_Noprog(ptr)) {
-            skip[skipcount] = atr_sub_branch(ptr);
-            if (skip[skipcount])
-              skipcount++;
-            prev[0]->no_prog = AF_NOPROG;
+        st_insert(AL_NAME(ptr), &seen);
+        if (AF_Noprog(ptr)) {
+          /* No-command. This, and later trees with this path its root
+             are skipped. */
+          st_insert(AL_NAME(ptr), &nocmd_roots);
+          if (AF_Root(ptr)) {
+            ATTR *p2 = atr_sub_branch(ptr);
+            if (p2) {
+              for (; AL_NAME(p2) && is_atree_root(AL_NAME(ptr), AL_NAME(p2));
+                   p2++) {
+                st_insert(AL_NAME(p2), &nocmd_roots);
+              }
+            }
           }
           continue;
         }
+      } else {
+        if (st_find(AL_NAME(ptr), &private_attrs)) {
+          /* Already decided to skip this attribute */
+          continue;
+        }
+        if (st_find(AL_NAME(ptr), &nocmd_roots)) {
+          /* Skip attributes that are masked by an earlier nocommand */
+          if (AF_Root(ptr)) {
+            ATTR *p2 = atr_sub_branch(ptr);
+            if (p2) {
+              for (; AL_NAME(p2) && is_atree_root(AL_NAME(ptr), AL_NAME(p2));
+                   p2++) {
+                st_insert(AL_NAME(p2), &nocmd_roots);
+                st_insert(AL_NAME(p2), &private_attrs);
+              }
+            }
+          }
+          continue;
+        }
+        if (AF_Private(ptr)) {
+          /* No-inherit. This attribute is not visible, but later ones
+             with the same name can be */
+          st_insert(AL_NAME(ptr), &private_attrs);
+          if (AF_Root(ptr)) {
+            ATTR *p2 = atr_sub_branch(ptr);
+            if (p2) {
+              for (; AL_NAME(p2) && is_atree_root(AL_NAME(ptr), AL_NAME(p2));
+                   p2++) {
+                st_insert(AL_NAME(p2), &private_attrs);
+              }
+            }
+          }
+          continue;
+        }
+        if (AF_Noprog(ptr)) {
+          /* No-command. This, and later trees with this path its root
+             are skipped. */
+          st_insert(AL_NAME(ptr), &nocmd_roots);
+          if (AF_Root(ptr)) {
+            ATTR *p2 = atr_sub_branch(ptr);
+            if (p2) {
+              for (; AL_NAME(p2) && is_atree_root(AL_NAME(ptr), AL_NAME(p2));
+                   p2++) {
+                st_insert(AL_NAME(p2), &nocmd_roots);
+              }
+            }
+          }
+          continue;
+        }
+        if (st_find(AL_NAME(ptr), &seen)) {
+          continue;
+        } else {
+          st_insert(AL_NAME(ptr), &seen);
+        }
       }
-      if (GoodObject(next)) {
-        prev = use_attr(prev, AL_NAME(ptr), AF_Noprog(ptr));
-      }
-      if (AF_Noprog(ptr)) {
-        skip[skipcount] = atr_sub_branch(ptr);
-        if (skip[skipcount])
-          skipcount++;
-        continue;
-      }
+
       if (!(AL_FLAGS(ptr) & flag_mask)) {
         continue;
       }
-      strcpy(tbuf1, atr_value(ptr));
-      s = tbuf1;
-      do {
-        s = strchr(s + 1, end);
-      } while (s && s[-1] == '\\');
-      if (!s)
-        continue;
-      *s++ = '\0';
+
       if (type == '^' && !AF_Ahear(ptr)) {
         if ((thing == player && !AF_Mhear(ptr)) ||
             (thing != player && AF_Mhear(ptr)))
           continue;
       }
 
-      if (AF_Regexp(ptr)) {
-        /* Turn \: into : */
-        char *from, *to;
-        for (from = tbuf1, to = tbuf2; *from; from++, to++) {
-          if (*from == '\\' && *(from + 1) == ':')
-            from++;
-          *to = *from;
-        }
-        *to = '\0';
-      } else
-        strcpy(tbuf2, tbuf1);
+      match_found =
+        atr_single_match_r(ptr, flag_mask, end, str, args, match_space,
+                           match_space_len, cmd_buff, pe_regs);
+      if (match_found)
+        match++;
 
-      match_found = 0;
-      if (AF_Regexp(ptr)) {
-        if (regexp_match_case_r(tbuf2 + 1, str, AF_Case(ptr), args,
-                                MAX_STACK_ARGS, match_space, match_space_len,
-                                pe_regs, PE_REGS_ARG)) {
-          match_found = 1;
-          match++;
-        }
-      } else {
-        if (quick_wild_new(tbuf2 + 1, str, AF_Case(ptr))) {
-          match_found = 1;
-          match++;
-          if (!just_match)
-            wild_match_case_r(tbuf2 + 1, str, AF_Case(ptr), args,
-                              MAX_STACK_ARGS, match_space, match_space_len,
-                              pe_regs, PE_REGS_ARG);
-        }
-      }
       if (match_found) {
         /* We only want to do the lock check once, so that any side
          * effects in the lock are only performed once per utterance.
@@ -1724,6 +2051,8 @@ atr_comm_match(dbref thing, dbref player, int type, int end, char const *str,
           safe_str(AL_NAME(ptr), atrname, abp);
         }
         if (!just_match) {
+          char tmp[BUFFER_LEN];
+
           if (from_queue &&
               (queue_type & ~QUEUE_DEBUG_PRIVS) != QUEUE_DEFAULT) {
             int pe_flags = PE_INFO_DEFAULT;
@@ -1747,19 +2076,21 @@ atr_comm_match(dbref thing, dbref player, int type, int end, char const *str,
                  q-registers - we'll be altering different copies anyway */
               queue_type &= ~QUEUE_PRESERVE_QREG;
             }
-            if (AF_NoDebug(ptr))
+            if (AF_NoDebug(ptr)) {
               queue_type |= QUEUE_NODEBUG;
-            else if (AF_Debug(ptr))
+            } else if (AF_Debug(ptr)) {
               queue_type |= QUEUE_DEBUG;
+            }
 
             /* inplace queue */
-            new_queue_actionlist_int(thing, player, player, s, from_queue,
-                                     pe_flags, queue_type, pe_regs,
-                                     tprintf("#%d/%s", thing, AL_NAME(ptr)));
+            snprintf(tmp, sizeof tmp, "#%d/%s", thing, AL_NAME(ptr));
+            new_queue_actionlist_int(thing, player, player, cmd_buff,
+                                     from_queue, pe_flags, queue_type, pe_regs,
+                                     tmp);
           } else {
             /* Normal queue */
             parse_que_attr(
-              thing, player, s, pe_regs, ptr,
+              thing, player, cmd_buff, pe_regs, ptr,
               (queue_type & QUEUE_DEBUG_PRIVS ? can_debug(player, thing) : 0));
           }
           pe_regs_free(pe_regs);
@@ -1768,13 +2099,12 @@ atr_comm_match(dbref thing, dbref player, int type, int end, char const *str,
         }
       }
     }
-  } while ((current = next) != NOTHING);
+  } while ((current = next) != NOTHING && !cpu_time_limit_hit);
 
-  while (used_list) {
-    UsedAttr *temp = used_list->next;
-    mush_free(used_list, "used_attr");
-    used_list = temp;
-  }
+  st_flush(&seen);
+  st_flush(&nocmd_roots);
+  st_flush(&private_attrs);
+
   if (pe_regs)
     pe_regs_free(pe_regs);
   free_pe_info(pe_info);
@@ -1801,9 +2131,7 @@ one_comm_match(dbref thing, dbref player, const char *atr, const char *str,
                MQUE *from_queue, int queue_type, PE_REGS *pe_regs_parent)
 {
   ATTR *ptr;
-  char tbuf1[BUFFER_LEN];
-  char tbuf2[BUFFER_LEN];
-  char *s;
+  char cmd_buff[BUFFER_LEN];
   PE_REGS *pe_regs;
   char match_space[BUFFER_LEN * 2];
   char *args[MAX_STACK_ARGS];
@@ -1820,60 +2148,40 @@ one_comm_match(dbref thing, dbref player, const char *atr, const char *str,
   if (!AF_Command(ptr))
     return 0;
 
-  strcpy(tbuf1, atr_value(ptr));
-  s = tbuf1;
-  do {
-    s = strchr(s + 1, ':');
-  } while (s && s[-1] == '\\');
-  if (!s)
-    return 0;
-  *s++ = '\0';
-
-  if (AF_Regexp(ptr)) {
-    /* Turn \: into : */
-    char *from, *to;
-    for (from = tbuf1, to = tbuf2; *from; from++, to++) {
-      if (*from == '\\' && *(from + 1) == ':')
-        from++;
-      *to = *from;
-    }
-    *to = '\0';
-  } else
-    strcpy(tbuf2, tbuf1);
-
   pe_regs = pe_regs_create(PE_REGS_ARG, "one_comm_match");
   pe_regs_copystack(pe_regs, pe_regs_parent, PE_REGS_ARG, 1);
-  if (AF_Regexp(ptr)
-        ? regexp_match_case_r(tbuf2 + 1, str, AF_Case(ptr), args,
-                              MAX_STACK_ARGS, match_space, match_space_len,
-                              pe_regs, PE_REGS_ARG)
-        : wild_match_case_r(tbuf2 + 1, str, AF_Case(ptr), args, MAX_STACK_ARGS,
-                            match_space, match_space_len, pe_regs,
-                            PE_REGS_ARG)) {
-    char save_cmd_raw[BUFFER_LEN], save_cmd_evaled[BUFFER_LEN];
+
+  if (atr_single_match_r(ptr, AF_COMMAND, ':', str, args, match_space,
+                         match_space_len, cmd_buff, pe_regs)) {
+    char *save_cmd_raw = NULL, *save_cmd_evaled = NULL;
     NEW_PE_INFO *pe_info;
 
     if (from_queue && (queue_type & ~QUEUE_DEBUG_PRIVS) != QUEUE_DEFAULT) {
       pe_info = from_queue->pe_info;
       /* Save and reset %c/%u */
-      strcpy(save_cmd_raw, from_queue->pe_info->cmd_raw);
-      strcpy(save_cmd_evaled, from_queue->pe_info->cmd_evaled);
+      save_cmd_raw = pe_info->cmd_raw;
+      pe_info->cmd_raw = NULL;
+      save_cmd_evaled = pe_info->cmd_evaled;
+      pe_info->cmd_evaled = NULL;
     } else {
       pe_info = make_pe_info("pe_info-one_comm_match");
     }
-    strcpy(pe_info->cmd_raw, str);
-    strcpy(pe_info->cmd_evaled, str);
+    pe_info->cmd_raw = mush_strdup(str, "string");
+    pe_info->cmd_evaled = mush_strdup(str, "string");
     if (eval_lock_clear(player, thing, Command_Lock, pe_info) &&
         eval_lock_clear(player, thing, Use_Lock, pe_info))
       success = 1;
     if (from_queue && (queue_type & ~QUEUE_DEBUG_PRIVS) != QUEUE_DEFAULT) {
       /* Restore */
-      strcpy(from_queue->pe_info->cmd_raw, save_cmd_raw);
-      strcpy(from_queue->pe_info->cmd_evaled, save_cmd_evaled);
+      mush_free(pe_info->cmd_raw, "string");
+      mush_free(pe_info->cmd_evaled, "string");
+      pe_info->cmd_raw = save_cmd_raw;
+      pe_info->cmd_evaled = save_cmd_evaled;
     } else {
       free_pe_info(pe_info);
     }
     if (success) {
+      char tmp[BUFFER_LEN];
       if (from_queue && (queue_type & ~QUEUE_DEBUG_PRIVS) != QUEUE_DEFAULT) {
         /* inplace queue */
         int pe_flags = PE_INFO_DEFAULT;
@@ -1896,19 +2204,20 @@ one_comm_match(dbref thing, dbref player, const char *atr, const char *str,
              q-registers - we'll be altering different copies anyway */
           queue_type &= ~QUEUE_PRESERVE_QREG;
         }
-        if (AF_NoDebug(ptr))
+        if (AF_NoDebug(ptr)) {
           queue_type |= QUEUE_NODEBUG;
-        else if (AF_Debug(ptr))
+        } else if (AF_Debug(ptr)) {
           queue_type |= QUEUE_DEBUG;
+        }
 
         /* inplace queue */
-        new_queue_actionlist_int(thing, player, player, s, from_queue, pe_flags,
-                                 queue_type, pe_regs,
-                                 tprintf("#%d/%s", thing, AL_NAME(ptr)));
+        snprintf(tmp, sizeof tmp, "#%d/%s", thing, AL_NAME(ptr));
+        new_queue_actionlist_int(thing, player, player, cmd_buff, from_queue,
+                                 pe_flags, queue_type, pe_regs, tmp);
       } else {
         /* Normal queue */
         parse_que_attr(
-          thing, player, s, pe_regs, ptr,
+          thing, player, cmd_buff, pe_regs, ptr,
           (queue_type & QUEUE_DEBUG_PRIVS ? can_debug(player, thing) : 0));
       }
     }
@@ -1955,8 +2264,7 @@ do_set_atr(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
   }
   if (!controls(player, thing))
     return 0;
-  strcpy(name, atr);
-  upcasestr(name);
+  strupper_r(atr, name, sizeof name);
   if (strcmp(name, "ALIAS") == 0) {
     if (IsPlayer(thing)) {
       old = atr_get_noparent(thing, "ALIAS");
@@ -2015,9 +2323,10 @@ do_set_atr(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
         }
       }
     }
-  } else if (s && *s && (!strcmp(name, "FORWARDLIST") ||
-                         !strcmp(name, "MAILFORWARDLIST") ||
-                         !strcmp(name, "DEBUGFORWARDLIST"))) {
+  } else if (s && *s &&
+             (!strcmp(name, "FORWARDLIST") ||
+              !strcmp(name, "MAILFORWARDLIST") ||
+              !strcmp(name, "DEBUGFORWARDLIST"))) {
     /* You can only set this to dbrefs of things you're allowed to
      * forward to. If you get one wrong, we puke.
      */
@@ -2076,8 +2385,9 @@ do_set_atr(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
         name);
       return 0;
     } else {
-      notify_format(player, T("Unable to set '%s' because of a failure to "
-                              "create a needed parent attribute."),
+      notify_format(player,
+                    T("Unable to set '%s' because of a failure to "
+                      "create a needed parent attribute."),
                     name);
       return 0;
     }
@@ -2106,7 +2416,7 @@ do_set_atr(dbref thing, const char *RESTRICT atr, const char *RESTRICT s,
     break;
   }
   if (!strcmp(name, "ALIAS") && IsPlayer(thing)) {
-    reset_player_list(thing, NULL, tbuf1, NULL, s);
+    reset_player_list(thing, Name(thing), s);
     if (s && *s)
       notify(player, T("Alias set."));
     else
@@ -2159,6 +2469,7 @@ do_atrlock(dbref player, const char *src, const char *action)
   char *target, *attrib;
   ATTR *ptr;
   enum atrlock_status status = ATRLOCK_CHECK;
+  char abuff[BUFFER_LEN];
 
   if (action && *action) {
     if (!strcasecmp(action, "on") || !strcasecmp(action, "yes") ||
@@ -2198,7 +2509,7 @@ do_atrlock(dbref player, const char *src, const char *action)
     return;
   }
 
-  ptr = atr_get_noparent(thing, strupper(attrib));
+  ptr = atr_get_noparent(thing, strupper_r(attrib, abuff, sizeof abuff));
   mush_free(target, "atrlock.string");
   if (!ptr || !Can_Read_Attr(player, thing, ptr)) {
     notify(player, T("No such attribute."));
@@ -2237,35 +2548,40 @@ do_atrlock(dbref player, const char *src, const char *action)
  * \param player the enactor, for permission checking.
  * \param xarg1 the object/attribute to change, as a string.
  * \param arg2 the name of the new owner (or "me").
+ * \retval 0 failed to change owner.
+ * \retval 1 successfully changed owner.
  */
-void
+int
 do_atrchown(dbref player, const char *xarg1, const char *arg2)
 {
   dbref thing, new_owner;
   char *p, *arg1;
   ATTR *ptr;
+  char abuff[BUFFER_LEN];
+  int retval = 0;
+
   if (!xarg1 || !*xarg1) {
     notify(player, T("You need to give an object/attribute pair."));
-    return;
+    return 0;
   }
 
   arg1 = mush_strdup(xarg1, "atrchown.string");
 
   if (!(p = strchr(arg1, '/')) || !(*(p + 1))) {
     notify(player, T("You need to give an object/attribute pair."));
-    mush_free(arg1, "atrchown.string");
-    return;
+    retval = 0;
+    goto cleanup;
   }
   *p++ = '\0';
   if ((thing = noisy_match_result(player, arg1, NOTYPE, MAT_EVERYTHING)) ==
       NOTHING) {
-    mush_free(arg1, "atrchown.string");
-    return;
+    retval = 0;
+    goto cleanup;
   }
   if (!controls(player, thing)) {
     notify(player, T("Permission denied."));
-    mush_free(arg1, "atrchown.string");
-    return;
+    retval = 0;
+    goto cleanup;
   }
 
   if (!(arg2 && *arg2) || !strcasecmp(arg2, "me"))
@@ -2274,72 +2590,57 @@ do_atrchown(dbref player, const char *xarg1, const char *arg2)
     new_owner = lookup_player(arg2);
   if (new_owner == NOTHING) {
     notify(player, T("I can't find that player"));
-    mush_free(arg1, "atrchown.string");
-    return;
+    retval = 0;
+    goto cleanup;
   }
 
-  ptr = atr_get_noparent(thing, strupper(p));
+  ptr = atr_get_noparent(thing, strupper_r(p, abuff, sizeof abuff));
   if (ptr && Can_Read_Attr(player, thing, ptr)) {
     if (Can_Write_Attr(player, thing, ptr)) {
       if (new_owner != Owner(player) && !Wizard(player)) {
         notify(player, T("You can only chown an attribute to yourself."));
-        mush_free(arg1, "atrchown.string");
-        return;
+        retval = 0;
+        goto cleanup;
       }
       AL_CREATOR(ptr) = Owner(new_owner);
       notify(player, T("Attribute owner changed."));
-      mush_free(arg1, "atrchown.string");
-      return;
+      retval = 1;
+      goto cleanup;
     } else {
       notify(player, T("You don't have the permission to chown that."));
-      mush_free(arg1, "atrchown.string");
-      return;
+      retval = 0;
+      goto cleanup;
     }
-  } else
+  } else {
     notify(player, T("No such attribute."));
-  mush_free(arg1, "atrchown.string");
-}
-
-/** Allocate a new ATTR from a slab allocator.
- * \return the pointer to the head of the attribute free list.
- */
-static ATTR *
-alloc_atr(const void *hint)
-{
-  if (!attrib_slab) {
-    attrib_slab = slab_create("attributes", sizeof(ATTR));
-    slab_set_opt(attrib_slab, SLAB_ALLOC_BEST_FIT, 1);
-    slab_set_opt(attrib_slab, SLAB_HINTLESS_THRESHOLD, 10);
+    retval = 0;
   }
-
-  return slab_malloc(attrib_slab, hint);
-}
-
-/** Free an unused attribute struct.
- * \param An attribute that's been deleted from an object and
- * had its chunk reference deleted.
- */
-static void
-free_atr(ATTR *a)
-{
-  slab_free(attrib_slab, a);
+cleanup:
+  mush_free(arg1, "atrchown.string");
+  return retval;
 }
 
 /** Delete one attribute, deallocating its name and data.
  * <strong>Does not update the owning object's attribute list or
  * attribute count. That is the caller's responsibility.</strong>
  *
+ * \param thing the object the attribute is on.
  * \param a the attribute to free
  */
 static void
-atr_free_one(ATTR *a)
+atr_free_one(dbref thing, ATTR *a)
 {
+  ptrdiff_t pos;
+
   if (!a)
     return;
   st_delete(AL_NAME(a), &atr_names);
   if (a->data)
     chunk_delete(a->data);
-  free_atr(a);
+
+  pos = a - List(thing);
+  atr_move_up(thing, pos);
+  AttrCount(thing) -= 1;
 }
 
 /** Return the compressed data for an attribute.

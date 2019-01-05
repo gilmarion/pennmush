@@ -238,8 +238,12 @@ connect_player(DESC *d, const char *name, const char *password,
   strcpy(errbuf,
          T("Either that player does not exist, or has a different password."));
 
-  if (!name || !*name)
+  if (!name || !*name) {
+    /* Missing player names are failures, but don't count them. */
+    queue_event(SYSEVENT, "SOCKET`LOGINFAIL", "%d,%s,%d,%s,#%d,",
+                d->descriptor, ip, count_failed(ip), "missing player name", -1);
     return NOTHING;
+  }
 
   /* validate name */
   if ((player = lookup_player(name)) == NOTHING) {
@@ -392,6 +396,7 @@ email_register_player(DESC *d, const char *name, const char *email,
   dbref player = NOTHING;
   FILE *fp;
   size_t NELEMS = sizeof(elems) - 1;
+  char sbuff[260];
 
   if (!check_fails(ip)) {
     return NOTHING;
@@ -477,7 +482,8 @@ email_register_player(DESC *d, const char *name, const char *email,
    */
 
   release_fd();
-  if ((fp = popen(tprintf("%s -t", options.sendmail_prog), "w")) == NULL) {
+  snprintf(sbuff, sizeof sbuff, "%s -t", options.sendmail_prog);
+  if ((fp = popen(sbuff, "w")) == NULL) {
     do_log(LT_CONN, 0, 0,
            "Failed registration of %s by %s: unable to open sendmail", name,
            email);
@@ -568,7 +574,7 @@ make_player(const char *name, const char *password, const char *host,
   (void) atr_add(player, "LASTSITE", host, GOD, 0);
   (void) atr_add(player, "LASTIP", ip, GOD, 0);
   (void) atr_add(player, "LASTFAILED", " ", GOD, 0);
-  sprintf(temp, "%d", START_QUOTA);
+  snprintf(temp, sizeof temp, "%d", START_QUOTA);
   (void) atr_add(player, "RQUOTA", temp, GOD, 0);
   (void) atr_add(player, "MAILCURF", "0", GOD,
                  AF_LOCKED | AF_NOPROG | AF_WIZARD);

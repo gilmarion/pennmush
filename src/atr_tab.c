@@ -59,33 +59,6 @@ PRIV attr_privs_set[] = {{"no_command", '$', AF_NOPROG, AF_NOPROG},
                          {"branch", '`', 0, 0},
                          {NULL, '\0', 0, 0}};
 
-/** Attribute flags which may be present in the db */
-PRIV attr_privs_db[] = {{"no_command", '$', AF_NOPROG, AF_NOPROG},
-                        {"no_inherit", 'i', AF_PRIVATE, AF_PRIVATE},
-                        {"no_clone", 'c', AF_NOCOPY, AF_NOCOPY},
-                        {"wizard", 'w', AF_WIZARD, AF_WIZARD},
-                        {"visual", 'v', AF_VISUAL, AF_VISUAL},
-                        {"mortal_dark", 'm', AF_MDARK, AF_MDARK},
-                        {"regexp", 'R', AF_REGEXP, AF_REGEXP},
-                        {"case", 'C', AF_CASE, AF_CASE},
-                        {"locked", '+', AF_LOCKED, AF_LOCKED},
-                        {"safe", 'S', AF_SAFE, AF_SAFE},
-                        {"prefixmatch", '\0', AF_PREFIXMATCH, AF_PREFIXMATCH},
-                        {"veiled", 'V', AF_VEILED, AF_VEILED},
-                        {"debug", 'b', AF_DEBUG, AF_DEBUG},
-                        {"no_debug", 'B', AF_NODEBUG, AF_NODEBUG},
-                        {"public", 'p', AF_PUBLIC, AF_PUBLIC},
-                        {"nearby", 'n', AF_NEARBY, AF_NEARBY},
-                        {"noname", 'N', AF_NONAME, AF_NONAME},
-                        {"nospace", 's', AF_NOSPACE, AF_NOSPACE},
-                        {"amhear", 'M', AF_MHEAR, AF_MHEAR},
-                        {"aahear", 'A', AF_AHEAR, AF_AHEAR},
-                        {"enum", '\0', AF_ENUM, AF_ENUM},
-                        {"limit", '\0', AF_RLIMIT, AF_RLIMIT},
-                        {"internal", '\0', AF_INTERNAL, AF_INTERNAL},
-                        {"quiet", 'Q', AF_QUIET, AF_QUIET},
-                        {NULL, '\0', 0, 0}};
-
 /** Attribute flags for viewing */
 PRIV attr_privs_view[] = {{"no_command", '$', AF_NOPROG, AF_NOPROG},
                           {"no_inherit", 'i', AF_PRIVATE, AF_PRIVATE},
@@ -245,7 +218,6 @@ attr_read(PENNFILE *f)
   a->data = NULL_CHUNK_REFERENCE;
   AL_FLAGS(a) = 0;
   AL_CREATOR(a) = GOD;
-  a->next = NULL;
 
   db_read_this_labeled_string(f, "name", &tmp);
 
@@ -287,18 +259,20 @@ attr_read(PENNFILE *f)
   } else if (AL_FLAGS(a) & AF_RLIMIT) {
     /* Need to validate regexp */
     char *t;
-    pcre *re;
-    const char *errptr;
-    int erroffset;
+    pcre2_code *re;
+    int errcode;
+    PCRE2_SIZE erroffset;
 
-    re = pcre_compile(tmp, PCRE_CASELESS, &errptr, &erroffset, tables);
+    re = pcre2_compile((const PCRE2_UCHAR *) tmp, PCRE2_ZERO_TERMINATED,
+                       re_compile_flags | PCRE2_CASELESS, &errcode, &erroffset,
+                       re_compile_ctx);
     if (!re) {
       do_rawlog(LT_ERR, "Invalid regexp in limit for attribute '%s' in db.",
                 AL_NAME(a));
       free_standard_attr(a, 0);
       return NULL;
     }
-    pcre_free(re); /* don't need it, just needed to check it */
+    pcre2_code_free(re); /* don't need it, just needed to check it */
 
     t = compress(tmp);
     a->data = chunk_create(t, strlen(t), 0);
@@ -358,8 +332,9 @@ attr_read_all(PENNFILE *f)
   ptab_end_inserts(&ptab_attrib);
 
   if (found != count)
-    do_rawlog(LT_ERR, "WARNING: Actual number of attrs (%d) different than "
-                      "expected count (%d).",
+    do_rawlog(LT_ERR,
+              "WARNING: Actual number of attrs (%d) different than "
+              "expected count (%d).",
               found, count);
 
   /* Assumes we'll always have at least one alias */
@@ -377,7 +352,7 @@ attr_read_all(PENNFILE *f)
       upcasestr(alias);
       if (!good_atr_name(alias)) {
         do_rawlog(LT_ERR, "Bad attribute name on alias '%s' in db.", alias);
-      } else if (aname_find_exact(strupper(alias))) {
+      } else if (aname_find_exact(alias)) {
         do_rawlog(
           LT_ERR,
           "Unable to alias attribute '%s' to '%s' in db: alias already in use.",
@@ -389,8 +364,9 @@ attr_read_all(PENNFILE *f)
     }
   }
   if (found != count)
-    do_rawlog(LT_ERR, "WARNING: Actual number of attr aliases (%d) different "
-                      "than expected count (%d).",
+    do_rawlog(LT_ERR,
+              "WARNING: Actual number of attr aliases (%d) different "
+              "than expected count (%d).",
               found, count);
 
   return;
@@ -530,25 +506,30 @@ check_attr_value(dbref player, const char *name, const char *value)
   /* Check for attribute limits and enums. */
   ATTR *ap;
   char *attrval;
-  pcre *re;
+  pcre2_code *re;
+  pcre2_match_data *md;
   int subpatterns;
-  const char *errptr;
-  int erroffset;
+  int errcode;
+  PCRE2_SIZE erroffset;
   char *ptr, *ptr2;
   char delim;
   int len;
   static char buff[BUFFER_LEN];
   char vbuff[BUFFER_LEN];
+  char ucname[BUFFER_LEN];
 
-  if (!name || !*name)
+  if (!name || !*name) {
     return value;
-  if (!value)
+  }
+  if (!value) {
     return value;
+  }
 
-  upcasestr((char *) name);
+  name = strupper_r(name, ucname, sizeof ucname);
   ap = (ATTR *) ptab_find_exact(&ptab_attrib, name);
-  if (!ap)
+  if (!ap) {
     return value;
+  }
 
   attrval = atr_value(ap);
   if (!attrval) {
@@ -556,14 +537,18 @@ check_attr_value(dbref player, const char *name, const char *value)
   }
 
   if (ap->flags & AF_RLIMIT) {
-    re = pcre_compile(remove_markup(attrval, NULL), PCRE_CASELESS, &errptr,
-                      &erroffset, tables);
-    if (!re)
+    re = pcre2_compile((const PCRE2_UCHAR *) remove_markup(attrval, NULL),
+                       PCRE2_ZERO_TERMINATED, re_compile_flags | PCRE2_CASELESS,
+                       &errcode, &erroffset, re_compile_ctx);
+    if (!re) {
       return value;
+    }
 
-    subpatterns =
-      pcre_exec(re, default_match_limit(), value, strlen(value), 0, 0, NULL, 0);
-    pcre_free(re);
+    md = pcre2_match_data_create_from_pattern(re, NULL);
+    subpatterns = pcre2_match(re, (const PCRE2_UCHAR *) value, strlen(value), 0,
+                              re_match_flags, md, re_match_ctx);
+    pcre2_code_free(re);
+    pcre2_match_data_free(md);
 
     if (subpatterns >= 0) {
       return value;
@@ -586,8 +571,7 @@ check_attr_value(dbref player, const char *name, const char *value)
     /* We match the enum case-insensitively, BUT we use the case
      * that is defined in the enum, so we copy the attr value
      * to buff and use that. */
-    snprintf(buff, BUFFER_LEN, "%s", attrval);
-    upcasestr(buff);
+    strupper_r(attrval, buff, sizeof buff);
 
     len = strlen(value);
     snprintf(vbuff, BUFFER_LEN, "%c%s%c", delim, value, delim);
@@ -642,43 +626,47 @@ check_attr_value(dbref player, const char *name, const char *value)
  * \param pattern The allowed pattern for the attribute.
  */
 void
-do_attribute_limit(dbref player, char *name, int type, char *pattern)
+do_attribute_limit(dbref player, const char *name, int type,
+                   const char *pattern)
 {
   ATTR *ap;
   char buff[BUFFER_LEN];
-  char *ptr, *bp;
+  char *bp;
   char delim = ' ';
-  pcre *re;
-  const char *errptr;
-  int erroffset;
+  pcre2_code *re;
+  int errcode;
+  PCRE2_SIZE erroffset;
   int unset = 0;
+  char ucname[BUFFER_LEN];
 
   if (pattern && *pattern) {
     if (type == AF_RLIMIT) {
       /* Compile to regexp. */
-      re = pcre_compile(remove_markup(pattern, NULL), PCRE_CASELESS, &errptr,
-                        &erroffset, tables);
+      re =
+        pcre2_compile((const PCRE2_UCHAR *) remove_markup(pattern, NULL),
+                      PCRE2_ZERO_TERMINATED, re_compile_flags | PCRE2_CASELESS,
+                      &errcode, &erroffset, re_compile_ctx);
       if (!re) {
         notify(player, T("Invalid Regular Expression."));
         return;
       }
       /* We only care if it's valid, we're not using it. */
-      pcre_free(re);
+      pcre2_code_free(re);
 
       /* Copy it to buff to be placed into ap->data. */
-      snprintf(buff, BUFFER_LEN, "%s", pattern);
+      mush_strncpy(buff, pattern, sizeof buff);
     } else if (type == AF_ENUM) {
-      ptr = name;
+      const char *ptr;
+
       /* Check for a delimiter: @attr/enum | attrname=foo */
-      if ((name = strchr(ptr, ' ')) != NULL) {
-        *(name++) = '\0';
-        if (strlen(ptr) > 1) {
+      if ((ptr = strchr(name, ' ')) != NULL) {
+        if (ptr != (name + 1)) {
           notify(player, T("Delimiter must be one character."));
           return;
         }
-        delim = *ptr;
+        delim = *name;
+        name = ptr + 1;
       } else {
-        name = ptr;
         delim = ' ';
       }
 
@@ -710,7 +698,7 @@ do_attribute_limit(dbref player, char *name, int type, char *pattern)
     notify(player, T("Which attribute do you mean?"));
     return;
   }
-  upcasestr(name);
+  name = strupper_r(name, ucname, sizeof ucname);
   if (*name == '@')
     name++;
 
@@ -828,7 +816,7 @@ do_attribute_access(dbref player, char *name, char *perms, int retroactive)
   if (retroactive) {
     for (i = 0; i < db_top; i++) {
       if ((ap2 = atr_get_noparent(i, name))) {
-        if (AL_FLAGS(ap2) & AF_ROOT)
+        if (AF_Root(ap2))
           AL_FLAGS(ap2) = flags | AF_ROOT;
         else
           AL_FLAGS(ap2) = flags;
@@ -1014,7 +1002,7 @@ display_attr_info(dbref player, ATTR *ap)
  * \param player The enactor
  * \param pattern Wildcard pattern of attrnames to decompile
  * \param retroactive Include the /retroactive switch?
-*/
+ */
 void
 do_decompile_attribs(dbref player, char *pattern, int retroactive)
 {
@@ -1051,8 +1039,10 @@ do_decompile_attribs(dbref player, char *pattern, int retroactive)
 void
 do_list_attribs(dbref player, int lc)
 {
+  char tmp[BUFFER_LEN];
   char *b = list_attribs();
-  notify_format(player, T("Attribs: %s"), lc ? strlower(b) : b);
+  notify_format(player, T("Attribs: %s"),
+                lc ? strlower_r(b, tmp, sizeof tmp) : b);
 }
 
 /** Return a list of standard attributes.

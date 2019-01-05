@@ -147,8 +147,10 @@ real_unparse(dbref player, dbref loc, int obey_myopic, int use_nameformat,
     p = buf;
 
   if (SUPPORT_HTML) {
+    char tmp[100];
     PUSE;
-    tag_wrap("A", tprintf("XCH_CMD=\"examine #%d\"", loc), p);
+    snprintf(tmp, sizeof tmp, "XCH_CMD=\"look #%d\"", loc);
+    tag_wrap("A", tmp, p);
     PEND;
     return pbuff;
   } else {
@@ -237,7 +239,7 @@ unparse_uinteger(uintmax_t num)
 /* Probably not right */
 #define PRIuMAX "llu"
 #endif
-  sprintf(str, "%" PRIuMAX, num);
+  snprintf(str, sizeof str, "%" PRIuMAX, num);
   return str;
 }
 

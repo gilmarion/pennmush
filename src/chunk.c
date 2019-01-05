@@ -247,6 +247,7 @@
 #include "log.h"
 #include "mymalloc.h"
 #include "notify.h"
+#include "strutil.h"
 
 #ifdef WIN32
 #pragma warning(disable : 4761) /* disable warning re conversion */
@@ -585,10 +586,10 @@ static int ignore; /**< Used to shut up compiler warnings when not asserting */
 static int
 LenToFullLen(int len)
 {
-  return (len + ((len > MAX_SHORT_CHUNK_LEN)
-                   ? (len > MAX_MEDIUM_CHUNK_LEN) ? CHUNK_LONG_DATA_OFFSET
-                                                  : CHUNK_MEDIUM_DATA_OFFSET
-                   : CHUNK_SHORT_DATA_OFFSET));
+  return (len + ((len > MAX_SHORT_CHUNK_LEN) ? (len > MAX_MEDIUM_CHUNK_LEN)
+                                                 ? CHUNK_LONG_DATA_OFFSET
+                                                 : CHUNK_MEDIUM_DATA_OFFSET
+                                             : CHUNK_SHORT_DATA_OFFSET));
 }
 
 static inline char *ChunkPointer(uint16_t, uint16_t);
@@ -868,7 +869,7 @@ debug_log(char const *format, ...)
   va_list args;
 
   va_start(args, format);
-  vsprintf(rolling_log[rolling_pos], format, args);
+  mush_vsnprintf(rolling_log[rolling_pos], ROLLING_LOG_ENTRY_LEN, format, args);
   va_end(args);
 
   rolling_log[rolling_pos][ROLLING_LOG_ENTRY_LEN - 1] = '\0';
@@ -1065,8 +1066,9 @@ region_is_valid(uint16_t region)
   for (offset = FIRST_CHUNK_OFFSET_IN_REGION; offset < REGION_SIZE;
        offset += len) {
     if (was_free && ChunkIsFree(region, offset)) {
-      do_rawlog(LT_ERR, "region 0x%04x is not valid: uncoalesced free chunk:"
-                        " 0x%04x (see map)",
+      do_rawlog(LT_ERR,
+                "region 0x%04x is not valid: uncoalesced free chunk:"
+                " 0x%04x (see map)",
                 region, offset);
       result = 0;
       dump = 1;
@@ -1079,8 +1081,9 @@ region_is_valid(uint16_t region)
       if (largest_free < len)
         largest_free = len;
       if (next_free != offset) {
-        do_rawlog(LT_ERR, "region 0x%04x is not valid: free chain broken:"
-                          " 0x%04x, expecting 0x%04x (see map)",
+        do_rawlog(LT_ERR,
+                  "region 0x%04x is not valid: free chain broken:"
+                  " 0x%04x, expecting 0x%04x (see map)",
                   region, offset, next_free);
         result = 0;
         dump = 1;
@@ -1091,16 +1094,18 @@ region_is_valid(uint16_t region)
       total_derefs += ChunkDerefs(region, offset);
       if (ChunkIsMedium(region, offset) &&
           ChunkLen(region, offset) <= MAX_SHORT_CHUNK_LEN) {
-        do_rawlog(LT_ERR, "region 0x%04x is not valid: medium chunk too small:"
-                          " 0x%04x (see map)",
+        do_rawlog(LT_ERR,
+                  "region 0x%04x is not valid: medium chunk too small:"
+                  " 0x%04x (see map)",
                   region, offset);
         result = 0;
         dump = 1;
       }
       if (ChunkIsLong(region, offset) &&
           ChunkLen(region, offset) <= MAX_MEDIUM_CHUNK_LEN) {
-        do_rawlog(LT_ERR, "region 0x%04x is not valid: long chunk too small:"
-                          " 0x%04x (see map)",
+        do_rawlog(LT_ERR,
+                  "region 0x%04x is not valid: long chunk too small:"
+                  " 0x%04x (see map)",
                   region, offset);
         result = 0;
         dump = 1;
@@ -1114,39 +1119,45 @@ region_is_valid(uint16_t region)
     result = 0;
   }
   if (next_free != 0) {
-    do_rawlog(LT_ERR, "region 0x%04x is not valid: free chain unterminated:"
-                      " expecting 0x%04x (see map)",
+    do_rawlog(LT_ERR,
+              "region 0x%04x is not valid: free chain unterminated:"
+              " expecting 0x%04x (see map)",
               region, next_free);
     result = 0;
     dump = 1;
   }
   if (rp->used_count != used_count) {
-    do_rawlog(LT_ERR, "region 0x%04x is not valid: used count is wrong:"
-                      " 0x%04x should be 0x%04x",
+    do_rawlog(LT_ERR,
+              "region 0x%04x is not valid: used count is wrong:"
+              " 0x%04x should be 0x%04x",
               region, rp->used_count, used_count);
     result = 0;
   }
   if (rp->total_derefs != total_derefs) {
-    do_rawlog(LT_ERR, "region 0x%04x is not valid: total derefs is wrong:"
-                      " 0x%04x should be 0x%04x",
+    do_rawlog(LT_ERR,
+              "region 0x%04x is not valid: total derefs is wrong:"
+              " 0x%04x should be 0x%04x",
               region, (unsigned int) rp->total_derefs, total_derefs);
     result = 0;
   }
   if (rp->free_count != free_count) {
-    do_rawlog(LT_ERR, "region 0x%04x is not valid: free count is wrong:"
-                      " 0x%04x should be 0x%04x",
+    do_rawlog(LT_ERR,
+              "region 0x%04x is not valid: free count is wrong:"
+              " 0x%04x should be 0x%04x",
               region, rp->free_count, free_count);
     result = 0;
   }
   if (rp->free_bytes != free_bytes) {
-    do_rawlog(LT_ERR, "region 0x%04x is not valid: free bytes is wrong:"
-                      " 0x%04x should be 0x%04x",
+    do_rawlog(LT_ERR,
+              "region 0x%04x is not valid: free bytes is wrong:"
+              " 0x%04x should be 0x%04x",
               region, rp->free_bytes, free_bytes);
     result = 0;
   }
   if (rp->largest_free_chunk != largest_free) {
-    do_rawlog(LT_ERR, "region 0x%04x is not valid: largest free is wrong:"
-                      " 0x%04x should be 0x%04x",
+    do_rawlog(LT_ERR,
+              "region 0x%04x is not valid: largest free is wrong:"
+              " 0x%04x should be 0x%04x",
               region, rp->largest_free_chunk, largest_free);
     result = 0;
   }
@@ -1940,14 +1951,20 @@ chunk_freehist(void)
 
 /** Display statistics to a player, or dump them to a log
  */
-#define STAT_OUT(x)                                                            \
-  do {                                                                         \
-    s = (x);                                                                   \
-    if (GoodObject(player))                                                    \
-      notify(player, s);                                                       \
-    else                                                                       \
-      do_rawlog(LT_TRACE, "%s", s);                                            \
-  } while (0)
+__attribute__((__format__(__printf__, 2, 3))) void WIN32_CDECL
+STAT_OUT(dbref player, const char *fmt, ...)
+{
+  char buff[BUFFER_LEN];
+  va_list args;
+  va_start(args, fmt);
+  mush_vsnprintf(buff, sizeof buff, fmt, args);
+  va_end(args);
+  if (GoodObject(player)) {
+    notify(player, buff);
+  } else {
+    do_rawlog(LT_TRACE, "%s", buff);
+  }
+}
 
 /** Display the stats summary page.
  * \param player the player to display it to, or NOTHING to log it.
@@ -1955,7 +1972,6 @@ chunk_freehist(void)
 static void
 chunk_statistics(dbref player)
 {
-  const char *s;
   int overhead;
   int free_count = 0;
   int free_bytes = 0;
@@ -1978,47 +1994,47 @@ chunk_statistics(dbref player)
   overhead = stat_used_short_count * CHUNK_SHORT_DATA_OFFSET +
              stat_used_medium_count * CHUNK_MEDIUM_DATA_OFFSET +
              stat_used_long_count * CHUNK_LONG_DATA_OFFSET;
-  STAT_OUT(tprintf(
-    "Chunks:    %10d allocated (%10d bytes, %10d (%2d%%) overhead)", used_count,
-    used_bytes, overhead, used_bytes ? overhead * 100 / used_bytes : 0));
+  STAT_OUT(player,
+           "Chunks:    %10d allocated (%10d bytes, %10d (%2d%%) overhead)",
+           used_count, used_bytes, overhead,
+           used_bytes ? overhead * 100 / used_bytes : 0);
   overhead = stat_used_short_count * CHUNK_SHORT_DATA_OFFSET;
-  STAT_OUT(tprintf(
-    "             %10d short     (%10d bytes, %10d (%2d%%) overhead)",
-    stat_used_short_count, stat_used_short_bytes, overhead,
-    stat_used_short_bytes ? overhead * 100 / stat_used_short_bytes : 0));
+  STAT_OUT(player,
+           "             %10d short     (%10d bytes, %10d (%2d%%) overhead)",
+           stat_used_short_count, stat_used_short_bytes, overhead,
+           stat_used_short_bytes ? overhead * 100 / stat_used_short_bytes : 0);
   overhead = stat_used_medium_count * CHUNK_MEDIUM_DATA_OFFSET;
-  STAT_OUT(tprintf(
-    "             %10d medium    (%10d bytes, %10d (%2d%%) overhead)",
+  STAT_OUT(
+    player, "             %10d medium    (%10d bytes, %10d (%2d%%) overhead)",
     stat_used_medium_count, stat_used_medium_bytes, overhead,
-    stat_used_medium_bytes ? overhead * 100 / stat_used_medium_bytes : 0));
+    stat_used_medium_bytes ? overhead * 100 / stat_used_medium_bytes : 0);
   overhead = stat_used_long_count * CHUNK_LONG_DATA_OFFSET;
-  STAT_OUT(
-    tprintf("             %10d long      (%10d bytes, %10d (%2d%%) overhead)",
-            stat_used_long_count, stat_used_long_bytes, overhead,
-            stat_used_long_bytes ? overhead * 100 / stat_used_long_bytes : 0));
-  STAT_OUT(
-    tprintf("           %10d free      (%10d bytes, %10d (%2d%%) fragmented)",
-            free_count, free_bytes, free_bytes - free_large,
-            free_bytes ? (free_bytes - free_large) * 100 / free_bytes : 0));
+  STAT_OUT(player,
+           "             %10d long      (%10d bytes, %10d (%2d%%) overhead)",
+           stat_used_long_count, stat_used_long_bytes, overhead,
+           stat_used_long_bytes ? overhead * 100 / stat_used_long_bytes : 0);
+  STAT_OUT(player,
+           "           %10d free      (%10d bytes, %10d (%2d%%) fragmented)",
+           free_count, free_bytes, free_bytes - free_large,
+           free_bytes ? (free_bytes - free_large) * 100 / free_bytes : 0);
   overhead = region_count * REGION_SIZE + region_array_len * sizeof(Region);
-  STAT_OUT(tprintf("Storage:   %10d total (%2d%% saturation)", overhead,
-                   used_bytes * 100 / overhead));
-  STAT_OUT(tprintf("Regions:   %10d total, %8d cached", (int) region_count,
-                   (int) cached_region_count));
-  STAT_OUT(
-    tprintf("Paging:    %10d out, %10d in", stat_page_out, stat_page_in));
-  STAT_OUT(" ");
-  STAT_OUT(tprintf("Period:    %10d (%10d accesses so far, %10d chunks at max)",
-                   (int) curr_period, stat_deref_count, stat_deref_maxxed));
-  STAT_OUT(tprintf("Activity:  %10d creates, %10d deletes this period",
-                   stat_create, stat_delete));
-  STAT_OUT(tprintf("Migration: %10d moves this period",
-                   stat_migrate_slide + stat_migrate_move));
-  STAT_OUT(tprintf("             %10d slide    %10d move", stat_migrate_slide,
-                   stat_migrate_move));
-  STAT_OUT(tprintf("             %10d in region%10d out of region",
-                   stat_migrate_slide + stat_migrate_move - stat_migrate_away,
-                   stat_migrate_away));
+  STAT_OUT(player, "Storage:   %10d total (%2d%% saturation)", overhead,
+           used_bytes * 100 / overhead);
+  STAT_OUT(player, "Regions:   %10d total, %8d cached", (int) region_count,
+           (int) cached_region_count);
+  STAT_OUT(player, "Paging:    %10d out, %10d in", stat_page_out, stat_page_in);
+  STAT_OUT(player, " ");
+  STAT_OUT(player, "Period:    %10d (%10d accesses so far, %10d chunks at max)",
+           (int) curr_period, stat_deref_count, stat_deref_maxxed);
+  STAT_OUT(player, "Activity:  %10d creates, %10d deletes this period",
+           stat_create, stat_delete);
+  STAT_OUT(player, "Migration: %10d moves this period",
+           stat_migrate_slide + stat_migrate_move);
+  STAT_OUT(player, "             %10d slide    %10d move", stat_migrate_slide,
+           stat_migrate_move);
+  STAT_OUT(player, "             %10d in region%10d out of region",
+           stat_migrate_slide + stat_migrate_move - stat_migrate_away,
+           stat_migrate_away);
 }
 
 /** Show just the page counts.
@@ -2027,9 +2043,7 @@ chunk_statistics(dbref player)
 static void
 chunk_page_stats(dbref player)
 {
-  const char *s;
-  STAT_OUT(
-    tprintf("Paging:    %10d out, %10d in", stat_page_out, stat_page_in));
+  STAT_OUT(player, "Paging:    %10d out, %10d in", stat_page_out, stat_page_in);
 }
 
 /** Display the per-region stats.
@@ -2039,17 +2053,17 @@ static void
 chunk_region_statistics(dbref player)
 {
   uint16_t rid;
-  const char *s;
 
   if (!GoodObject(player)) {
     do_rawlog(LT_TRACE, "---- Region statistics");
   }
   for (rid = 0; rid < region_count; rid++) {
-    STAT_OUT(tprintf("region:%4d  #used:%5d  #free:%5d  "
-                     "fbytes:%04x  largest:%04x  deref:%3d",
-                     rid, regions[rid].used_count, regions[rid].free_count,
-                     regions[rid].free_bytes, regions[rid].largest_free_chunk,
-                     (int) RegionDerefs(rid)));
+    STAT_OUT(player,
+             "region:%4d  #used:%5d  #free:%5d  "
+             "fbytes:%04x  largest:%04x  deref:%3d",
+             rid, regions[rid].used_count, regions[rid].free_count,
+             regions[rid].free_bytes, regions[rid].largest_free_chunk,
+             (int) RegionDerefs(rid));
   }
 }
 
@@ -2061,7 +2075,6 @@ chunk_region_statistics(dbref player)
 static void
 chunk_histogram(dbref player, int const *histogram, char const *legend)
 {
-  const char *s;
   int j, k, max, pen, ante;
   char buffer[20][65];
   char num[16];
@@ -2108,7 +2121,7 @@ chunk_histogram(dbref player, int const *histogram, char const *legend)
     k = histogram[j * 4 + 0] + histogram[j * 4 + 1] + histogram[j * 4 + 2] +
         histogram[j * 4 + 3];
     if (k > max) {
-      sprintf(num, "(%d)", k);
+      snprintf(num, sizeof num, "(%d)", k);
       if (j < 32) {
         if (j < pen)
           ante = 18;
@@ -2126,17 +2139,17 @@ chunk_histogram(dbref player, int const *histogram, char const *legend)
       }
     }
   }
-  STAT_OUT("");
-  STAT_OUT(legend);
-  STAT_OUT(tprintf("%6d |%s", max, buffer[19]));
+  STAT_OUT(player, "%s", "");
+  STAT_OUT(player, "%s", legend);
+  STAT_OUT(player, "%6d |%s", max, buffer[19]);
   j = 19;
   while (j-- > 1)
-    STAT_OUT(tprintf("       |%s", buffer[j]));
-  STAT_OUT(tprintf("     0 |%s", buffer[0]));
+    STAT_OUT(player, "       |%s", buffer[j]);
+  STAT_OUT(player, "     0 |%s", buffer[0]);
   for (j = 0, k = 2; j < 64; j++, k += 4)
     buffer[0][j] = '-';
-  STAT_OUT(tprintf("       +%s", buffer[0]));
-  STAT_OUT(tprintf("        0%31s%32d", "|", 255));
+  STAT_OUT(player, "       +%s", buffer[0]);
+  STAT_OUT(player, "        0%31s%32d", "|", 255);
 }
 
 #undef STAT_OUT
@@ -2631,7 +2644,8 @@ acc_chunk_fork_file(void)
 
   j = 0;
   for (;;) {
-    sprintf(child_filename, "%s.%d", CHUNK_SWAP_FILE, j);
+    snprintf(child_filename, sizeof child_filename, "%s.%d", CHUNK_SWAP_FILE,
+             j);
     swap_fd_child = open(child_filename, O_RDWR | O_EXCL | O_CREAT, 0600);
     if (swap_fd_child >= 0)
       break;

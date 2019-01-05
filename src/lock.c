@@ -87,42 +87,7 @@ lock_type InFilter_Lock = "InFilter";       /**< Name of infilter lock */
 lock_type DropIn_Lock = "DropIn";           /**< Name of the DropIn lock */
 lock_type Chown_Lock = "Chown";             /**< Name of Chown lock */
 
-/** Table of lock names and permissions */
-lock_list lock_types[] = {
-  {"Basic", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Enter", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Use", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Zone", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Page", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Teleport", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Speech", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Listen", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Command", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Parent", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Link", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Leave", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Drop", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Give", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"From", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Pay", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Receive", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Mail", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Follow", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Examine", TRUE_BOOLEXP, GOD, LF_PRIVATE | LF_OWNER, NULL},
-  {"Chzone", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Forward", TRUE_BOOLEXP, GOD, LF_PRIVATE | LF_OWNER, NULL},
-  {"Control", TRUE_BOOLEXP, GOD, LF_PRIVATE | LF_OWNER, NULL},
-  {"Dropto", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Destroy", TRUE_BOOLEXP, GOD, LF_PRIVATE | LF_OWNER, NULL},
-  {"Interact", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"MailForward", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Take", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Open", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Filter", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"InFilter", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"DropIn", TRUE_BOOLEXP, GOD, LF_PRIVATE, NULL},
-  {"Chown", TRUE_BOOLEXP, GOD, LF_PRIVATE | LF_OWNER, NULL},
-  {NULL, TRUE_BOOLEXP, GOD, 0, NULL}};
+#include "lock_tab.h"
 
 HASHTAB htab_locks;
 
@@ -140,15 +105,6 @@ const LOCKMSGINFO lock_msgs[] = {{"Basic", "SUCCESS", "FAILURE"},
                                  {"Leave", "LEAVE", "LFAIL"},
                                  {NULL, NULL, NULL}};
 
-/** Table of lock permissions */
-PRIV lock_privs[] = {{"visual", 'v', LF_VISUAL, LF_VISUAL},
-                     {"no_inherit", 'i', LF_PRIVATE, LF_PRIVATE},
-                     {"no_clone", 'c', LF_NOCLONE, LF_NOCLONE},
-                     {"wizard", 'w', LF_WIZARD, LF_WIZARD},
-                     /*  {"owner", 'o', LF_OWNER, LF_OWNER}, */
-                     {"locked", '+', LF_LOCKED, LF_LOCKED},
-                     {NULL, '\0', 0, 0}};
-
 StrTree lock_names; /**< String tree of lock names */
 
 static void free_one_lock_list(lock_list *ll);
@@ -165,8 +121,7 @@ extern int unparsing_boolexp;
 static int
 lock_compare(const void *a, const void *b)
 {
-  const lock_list *la = *(lock_list * const *) a,
-                  *lb = *(lock_list * const *) b;
+  const lock_list *la = *(lock_list *const *) a, *lb = *(lock_list *const *) b;
   return strcmp(la->type, lb->type);
 }
 
@@ -316,7 +271,7 @@ define_lock(lock_type name, privbits flags)
   lock_list *newlock;
 
   newlock = mush_malloc(sizeof *newlock, "lock");
-  newlock->type = mush_strdup(strupper(name), "lock.name");
+  newlock->type = strupper_a(name, "lock.name");
   newlock->flags = flags;
   newlock->creator = GOD;
   newlock->key = TRUE_BOOLEXP;
@@ -1026,8 +981,9 @@ check_zone_lock(dbref player, dbref zone, int noisy)
                     unparse_object(player, zone, AN_UNPARSE));
     } else {
       /* Probably inexact zone lock */
-      notify_format(player, T("Warning: Zone %s may have loose zone lock. Lock "
-                              "zones to =player, not player"),
+      notify_format(player,
+                    T("Warning: Zone %s may have loose zone lock. Lock "
+                      "zones to =player, not player"),
                     unparse_object(player, zone, AN_UNPARSE));
     }
   }

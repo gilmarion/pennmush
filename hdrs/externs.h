@@ -51,7 +51,7 @@ void dump_database(void);
 void NORETURN mush_panic(const char *message);
 void NORETURN mush_panicf(const char *fmt, ...)
   __attribute__((__format__(__printf__, 1, 2)));
-char *scan_list(dbref player, char *command, int flag);
+char *scan_list(dbref executor, dbref looker, char *command, int flag);
 
 #ifdef WIN32
 /* From timer.c */
@@ -79,15 +79,10 @@ char *least_idle_hostname(dbref player);
 void do_who_mortal(dbref player, char *name);
 void do_who_admin(dbref player, char *name);
 void do_who_session(dbref player, char *name);
-char *json_to_string_real(JSON *json, int verbose, int recurse);
-#define json_to_string(j, v) json_to_string_real(j, v, 0)
-JSON *string_to_json_real(char *input, char **ip, int recurse);
-#define string_to_json(in) string_to_json_real(in, NULL, 0)
 char *json_unescape_string(char *input);
 char *json_escape_string(char *input);
-void json_free(JSON *json);
 void register_gmcp_handler(char *package, gmcp_handler_func func);
-void send_oob(DESC *d, char *package, JSON *data);
+void send_oob(DESC *d, char *package, cJSON *data);
 
 /* sql.c */
 void sql_shutdown(void);
@@ -166,7 +161,6 @@ char *text_compress(char const *) __attribute_malloc__;
   0x010 /**< Copy values for %c and %u from the parent pe_info */
 
 struct _ansi_string;
-struct real_pcre;
 
 void do_second(void);
 int do_top(int ncom);
@@ -191,23 +185,27 @@ void new_queue_actionlist_int(dbref executor, dbref enactor, dbref caller,
 
 int queue_attribute_base_priv(dbref executor, const char *atrname,
                               dbref enactor, int noparent, PE_REGS *pe_regs,
-                              int flags, dbref priv);
+                              int flags, dbref priv, MQUE *parent_queue,
+                              const char *input);
 ATTR *queue_attribute_getatr(dbref executor, const char *atrname, int noparent);
 int queue_attribute_useatr(dbref executor, ATTR *a, dbref enactor,
-                           PE_REGS *pe_regs, int flags);
+                           PE_REGS *pe_regs, int flags, MQUE *parent_queue,
+                           const char *input);
 int queue_include_attribute(dbref thing, const char *atrname, dbref executor,
                             dbref cause, dbref caller, char **args, int recurse,
                             MQUE *parent_queue);
 void run_user_input(dbref player, int port, char *input);
+void run_http_command(dbref player, int port, char *method,
+                      NEW_PE_INFO *pe_info);
 
 #define queue_attribute_base(ex, at, en, nop, pereg, flag)                     \
-  queue_attribute_base_priv(ex, at, en, nop, pereg, flag, NOTHING)
+  queue_attribute_base_priv(ex, at, en, nop, pereg, flag, NOTHING, NULL, NULL)
 /** Queue the code in an attribute, including parent objects */
 #define queue_attribute(a, b, c)                                               \
-  queue_attribute_base_priv(a, b, c, 0, NULL, 0, NOTHING)
+  queue_attribute_base_priv(a, b, c, 0, NULL, 0, NOTHING, NULL, NULL)
 /** Queue the code in an attribute, excluding parent objects */
 #define queue_attribute_noparent(a, b, c)                                      \
-  queue_attribute_base_priv(a, b, c, 1, NULL, 0, NOTHING)
+  queue_attribute_base_priv(a, b, c, 1, NULL, 0, NOTHING, NULL, NULL)
 void dequeue_semaphores(dbref thing, char const *aname, int count, int all,
                         int drain);
 void shutdown_queues(void);
@@ -220,10 +218,10 @@ dbref do_real_open(dbref player, const char *direction, const char *linkto,
                    dbref pseudo, NEW_PE_INFO *pe_info);
 void do_open(dbref player, const char *direction, char **links,
              NEW_PE_INFO *pe_info);
-void do_link(dbref player, const char *name, const char *room_name,
-             int preserve, NEW_PE_INFO *pe_info);
+int do_link(dbref player, const char *name, const char *room_name, int preserve,
+            NEW_PE_INFO *pe_info);
 void do_unlink(dbref player, const char *name);
-dbref do_clone(dbref player, char *name, char *newname, int preserve,
+dbref do_clone(dbref player, char *name, char *newname, bool preserve,
                char *newdbref, NEW_PE_INFO *pe_info);
 
 /* From funtime.c */
@@ -304,6 +302,7 @@ void check_lastfailed(dbref player, const char *host);
 bool is_number(const char *str);
 bool is_strict_number(const char *str);
 bool is_strict_integer(const char *str);
+bool is_strict_int64(const char *str);
 bool is_integer_list(const char *str);
 #ifdef HAVE_ISNORMAL
 #define is_good_number(n) isnormal((n))
@@ -314,10 +313,9 @@ bool is_good_number(NVAL val);
 /* From plyrlist.c */
 void clear_players(void);
 void add_player(dbref player);
-void add_player_alias(dbref player, const char *alias);
-void delete_player(dbref player, const char *alias);
-void reset_player_list(dbref player, const char *oldname, const char *oldalias,
-                       const char *name, const char *alias);
+void add_player_alias(dbref player, const char *alias, bool intransaction);
+void delete_player(dbref player);
+void reset_player_list(dbref player, const char *name, const char *alias);
 
 int could_doit(dbref player, dbref thing, NEW_PE_INFO *pe_info);
 int did_it(dbref player, dbref thing, const char *what, const char *def,
@@ -363,7 +361,7 @@ int ok_password(const char *password);
 int ok_tag_attribute(dbref player, const char *params);
 dbref parse_match_possessor(dbref player, char **str, int exits);
 void page_return(dbref player, dbref target, const char *type,
-                 const char *message, const char *def);
+                 const char *message, const char *def, NEW_PE_INFO *pe_info);
 dbref where_is(dbref thing);
 int charge_action(dbref thing);
 dbref first_visible(dbref player, dbref thing);
@@ -443,6 +441,13 @@ const char *accented_name(dbref thing);
 
 /* From utils.c */
 void parse_attrib(dbref player, char *str, dbref *thing, ATTR **attrib);
+uint64_t now_msecs(); /* current milliseconds */
+#define SECS_TO_MSECS(x) ((x) *1000UL)
+#ifdef WIN32
+void penn_gettimeofday(struct timeval *now); /* For platform agnosticism */
+#else
+#define penn_gettimeofday(now) gettimeofday((now), (struct timezone *) NULL)
+#endif
 
 /** Information about an attribute to ufun.
  * Prepared via fetch_ufun_attrib, used in call_ufun
@@ -535,8 +540,8 @@ bool regexp_match_case_r(const char *restrict s, const char *restrict d,
                          PE_REGS *pe_regs, int pe_reg_flags);
 bool quick_regexp_match(const char *restrict s, const char *restrict d, bool cs,
                         const char **report_err);
-bool qcomp_regexp_match(const pcre *re, pcre_extra *study, const char *s,
-                        size_t);
+bool qcomp_regexp_match(const pcre2_code *re, pcre2_match_data *md,
+                        const char *s, PCRE2_SIZE);
 /** Default (case-insensitive) local wildcard match */
 #define local_wild_match(s, d, p) local_wild_match_case(s, d, 0, p)
 
@@ -611,5 +616,15 @@ int local_can_interact_last(dbref from, dbref to, int type);
 
 /* flaglocal.c */
 void local_flags(FLAGSPACE *flags);
+
+/* Functions for suggesting alternatives to misspelled names */
+void init_private_vocab(void);
+char *suggest_name(const char *name, const char *category);
+void add_private_vocab(const char *name, const char *category);
+void delete_private_vocab(const char *name, const char *category);
+void delete_private_vocab_cat(const char *category);
+
+char *suggest_word(const char *name, const char *category);
+void add_dict_words(void);
 
 #endif /* __EXTERNS_H */

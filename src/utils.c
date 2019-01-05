@@ -39,10 +39,6 @@
 #include <stdint.h>
 #endif
 
-#ifdef __RDRND__
-#include <immintrin.h>
-#endif
-
 #include "ansi.h"
 #include "attrib.h"
 #include "conf.h"
@@ -59,6 +55,45 @@
 #include "pcg_basic.h"
 
 dbref find_entrance(dbref door);
+
+#ifdef WIN32
+/** Get the time using Windows function call.
+ * Looks weird, but it works. :-P
+ * \param now address to store timeval data.
+ */
+void
+penn_gettimeofday(struct timeval *now)
+{
+
+  FILETIME win_time;
+
+  GetSystemTimeAsFileTime(&win_time);
+  /* dwLow is in 100-s nanoseconds, not microseconds */
+  now->tv_usec = win_time.dwLowDateTime % 10000000 / 10;
+
+  /* dwLow contains at most 429 least significant seconds, since 32 bits maxint
+   * is 4294967294 */
+  win_time.dwLowDateTime /= 10000000;
+
+  /* Make room for the seconds of dwLow in dwHigh */
+  /* 32 bits of 1 = 4294967295. 4294967295 / 429 = 10011578 */
+  win_time.dwHighDateTime %= 10011578;
+  win_time.dwHighDateTime *= 429;
+
+  /* And add them */
+  now->tv_sec = win_time.dwHighDateTime + win_time.dwLowDateTime;
+}
+
+#endif
+
+/* Returns current time in milliseconds. */
+uint64_t
+now_msecs()
+{
+  struct timeval tv;
+  penn_gettimeofday(&tv);
+  return (1000ULL * tv.tv_sec) + (tv.tv_usec / 1000UL);
+}
 
 /** Parse object/attribute strings into components.
  * This function takes a string which is of the format obj/attr or attr,
@@ -108,9 +143,17 @@ fetch_ufun_attrib(const char *attrstring, dbref executor, ufun_attrib *ufun,
   char *thingname, *attrname;
   char astring[BUFFER_LEN];
   ATTR *attrib;
+  char *stripped;
 
-  if (!ufun)
+  if (!ufun) {
     return 0;
+  }
+
+  if (!attrstring) {
+    return 0;
+  }
+
+  stripped = remove_markup(attrstring, NULL);
 
   memset(ufun->contents, 0, sizeof ufun->contents);
   ufun->errmess = (char *) "";
@@ -121,9 +164,7 @@ fetch_ufun_attrib(const char *attrstring, dbref executor, ufun_attrib *ufun,
   ufun->thing = executor;
   thingname = NULL;
 
-  if (!attrstring)
-    return 0;
-  strncpy(astring, attrstring, BUFFER_LEN);
+  mush_strncpy(astring, stripped, sizeof astring);
 
   /* Split obj/attr */
   if ((flags & UFUN_OBJECT) && ((attrname = strchr(astring, '/')) != NULL)) {
@@ -253,11 +294,11 @@ bool
 call_ufun_int(ufun_attrib *ufun, char *ret, dbref caller, dbref enactor,
               NEW_PE_INFO *pe_info, PE_REGS *user_regs, void *data)
 {
-  char rbuff[BUFFER_LEN];
+  char rbuff[BUFFER_LEN + 40];
   char *rp, *np = NULL;
   int pe_ret;
   char const *ap;
-  char old_attr[BUFFER_LEN];
+  char *old_attr = NULL;
   int made_pe_info = 0;
   PE_REGS *pe_regs;
   PE_REGS *pe_regs_old;
@@ -270,7 +311,8 @@ call_ufun_int(ufun_attrib *ufun, char *ret, dbref caller, dbref enactor,
     pe_info = make_pe_info("pe_info.call_ufun");
     made_pe_info = 1;
   } else {
-    strcpy(old_attr, pe_info->attrname);
+    old_attr = pe_info->attrname;
+    pe_info->attrname = NULL;
   }
 
   pe_regs_old = pe_info->regvals;
@@ -285,17 +327,14 @@ call_ufun_int(ufun_attrib *ufun, char *ret, dbref caller, dbref enactor,
 
   pe_regs = pe_regs_localize(pe_info, pe_reg_flags, "call_ufun");
 
-  rp = pe_info->attrname;
   if (*ufun->attrname == '\0') {
-    safe_str("#LAMBDA", pe_info->attrname, &rp);
-    safe_chr('/', pe_info->attrname, &rp);
-    safe_str(ufun->contents, pe_info->attrname, &rp);
+    /* TODO: sprintf_new()? */
+    snprintf(rbuff, sizeof rbuff, "#LAMBDA/%s", ufun->contents);
+    pe_info->attrname = mush_strdup(rbuff, "string");
   } else {
-    safe_dbref(ufun->thing, pe_info->attrname, &rp);
-    safe_chr('/', pe_info->attrname, &rp);
-    safe_str(ufun->attrname, pe_info->attrname, &rp);
+    snprintf(rbuff, sizeof rbuff, "#%d/%s", ufun->thing, ufun->attrname);
+    pe_info->attrname = mush_strdup(rbuff, "string");
   }
-  *rp = '\0';
 
   /* If the user doesn't care about the return of the expression,
    * then use our own rbuff.  */
@@ -343,7 +382,8 @@ call_ufun_int(ufun_attrib *ufun, char *ret, dbref caller, dbref enactor,
 
   if (!made_pe_info) {
     /* Restore the old attrname. */
-    strcpy(pe_info->attrname, old_attr);
+    mush_free(pe_info->attrname, "string");
+    pe_info->attrname = old_attr;
   } else {
     free_pe_info(pe_info);
   }
@@ -418,8 +458,7 @@ remove_first(dbref first, dbref what)
     return Next(first);
   } else {
     /* have to find it */
-    DOLIST(prev, first)
-    {
+    DOLIST (prev, first) {
       if (Next(prev) == what) {
         Next(prev) = Next(what);
         return first;
@@ -438,8 +477,7 @@ remove_first(dbref first, dbref what)
 bool
 member(dbref thing, dbref list)
 {
-  DOLIST(list, list)
-  {
+  DOLIST (list, list) {
     if (list == thing)
       return 1;
   }
@@ -516,7 +554,8 @@ reverse(dbref list)
   return newlist;
 }
 
-pcg32_random_t rand_state1, rand_state2;
+pcg32_random_t rand_state;
+void generate_seed(uint64_t *);
 
 /** Initialize the random number generator used by the mush. Attempts to use a
  * seed value
@@ -526,49 +565,9 @@ pcg32_random_t rand_state1, rand_state2;
 void
 initialize_rng(void)
 {
-  uint64_t seeds[4];
-  bool seed_generated __attribute__((__unused__)) = false;
-
-#ifdef HAVE_DEV_URANDOM
-  /* Seed from /dev/urandom if available */
-  int fd;
-
-  fd = open("/dev/urandom", O_RDONLY);
-  if (fd >= 0) {
-    int r = read(fd, (void *) seeds, sizeof seeds);
-    close(fd);
-    if (r <= 0) {
-      fprintf(stderr, "Couldn't read from /dev/urandom! Resorting to normal "
-                      "seeding method.\n");
-    } else {
-      fprintf(stderr, "Seeding RNG with %d bytes from /dev/urandom\n", r);
-      seed_generated = true;
-    }
-  } else
-    fprintf(stderr, "Couldn't open /dev/urandom to seed random number "
-                    "generator. Resorting to normal seeding method.\n");
-#endif
-
-#ifdef WIN32
-  /* Use the Win32 bcrypto RNG interface */
-  if (BCryptGenRandom(NULL, (PUCHAR) seeds, sizeof seeds,
-                      BCRYPT_USE_SYSTEM_PREFERRED_RNG) == STATUS_SUCCESS) {
-    fprintf(stderr, "Seeding RNG with %I64u bytes from BCryptGenRandom()\n",
-            sizeof seeds);
-  } else {
-    seeds[0] = (uint64_t) time(NULL);
-    seeds[1] = (uint64_t) GetCurrentProcessId();
-  }
-#else
-  /* Default seeder. Pick a seed that's slightly random */
-  if (!seed_generated) {
-    seeds[0] = (uint64_t) time(NULL);
-    seeds[1] = (uint64_t) getpid();
-  }
-#endif
-
-  pcg32_srandom_r(&rand_state1, seeds[0], seeds[1]);
-  pcg32_srandom_r(&rand_state2, seeds[2], seeds[3]);
+  uint64_t seeds[2];
+  generate_seed(seeds);
+  pcg32_srandom_r(&rand_state, seeds[0], seeds[1]);
 }
 
 /** Get a uniform random long between low and high values, inclusive.
@@ -611,7 +610,7 @@ get_random_u32(uint32_t low, uint32_t high)
   n_limit = UINT32_MAX - (UINT32_MAX % x);
 
   do {
-    n = pcg32_random_r(&rand_state1);
+    n = pcg32_random_r(&rand_state);
   } while (n >= n_limit);
 
   return low + (n % x);
@@ -622,8 +621,8 @@ double
 get_random_d(void)
 {
   uint64_t a, b, c;
-  a = pcg32_random_r(&rand_state1);
-  b = pcg32_random_r(&rand_state2);
+  a = pcg32_random_r(&rand_state);
+  b = pcg32_random_r(&rand_state);
   c = (a << 32) | b;
   return ldexp((double) c, -64);
 }
@@ -633,8 +632,8 @@ double
 get_random_d2(void)
 {
   uint64_t a, b, c;
-  a = pcg32_random_r(&rand_state1);
-  b = pcg32_random_r(&rand_state2);
+  a = pcg32_random_r(&rand_state);
+  b = pcg32_random_r(&rand_state);
   c = (a << 32) | b;
   return ldexp(((double) c) + 0.5, -64);
 }

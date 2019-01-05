@@ -35,6 +35,8 @@
 #include "gitinfo.h"
 #include "tz.h"
 #include "version.h"
+#include "mushsql.h"
+#include "charconv.h"
 
 #ifdef WIN32
 #include <windows.h>
@@ -42,7 +44,6 @@
 #endif
 
 extern FUN flist[];
-static char *soundex(char *str);
 extern char cf_motd_msg[BUFFER_LEN], cf_wizmotd_msg[BUFFER_LEN],
   cf_downmotd_msg[BUFFER_LEN], cf_fullmotd_msg[BUFFER_LEN];
 extern HASHTAB htab_function;
@@ -55,14 +56,15 @@ FUNCTION(fun_valid)
   /* Checks to see if a given <something> is valid as a parameter of a
    * given type (such as an object name.)
    */
+  char tmp[BUFFER_LEN];
 
-  if (!args[0] || !*args[0])
+  if (!args[0] || !*args[0]) {
     safe_str("#-1", buff, bp);
-  else if (!strcasecmp(args[0], "name"))
+  } else if (!strcasecmp(args[0], "name")) {
     safe_boolean(ok_name(args[1], 0), buff, bp);
-  else if (!strcasecmp(args[0], "attrname"))
-    safe_boolean(good_atr_name(upcasestr(args[1])), buff, bp);
-  else if (!strcasecmp(args[0], "playername")) {
+  } else if (!strcasecmp(args[0], "attrname")) {
+    safe_boolean(good_atr_name(strupper_r(args[1], tmp, sizeof tmp)), buff, bp);
+  } else if (!strcasecmp(args[0], "playername")) {
     dbref target = executor;
     if (nargs >= 3) {
       target = noisy_match_result(executor, args[2], TYPE_PLAYER,
@@ -73,19 +75,22 @@ FUNCTION(fun_valid)
       }
     }
     safe_boolean(ok_player_name(args[1], target, target), buff, bp);
-  } else if (!strcasecmp(args[0], "password"))
+  } else if (!strcasecmp(args[0], "password")) {
     safe_boolean(ok_password(args[1]), buff, bp);
-  else if (!strcasecmp(args[0], "command"))
-    safe_boolean(ok_command_name(upcasestr(args[1])), buff, bp);
-  else if (!strcasecmp(args[0], "function"))
-    safe_boolean(ok_function_name(upcasestr(args[1])), buff, bp);
-  else if (!strcasecmp(args[0], "flag"))
-    safe_boolean(good_flag_name(upcasestr(args[1])), buff, bp);
-  else if (!strcasecmp(args[0], "qreg"))
+  } else if (!strcasecmp(args[0], "command")) {
+    safe_boolean(ok_command_name(strupper_r(args[1], tmp, sizeof tmp)), buff,
+                 bp);
+  } else if (!strcasecmp(args[0], "function")) {
+    safe_boolean(ok_function_name(strupper_r(args[1], tmp, sizeof tmp)), buff,
+                 bp);
+  } else if (!strcasecmp(args[0], "flag")) {
+    safe_boolean(good_flag_name(strupper_r(args[1], tmp, sizeof tmp)), buff,
+                 bp);
+  } else if (!strcasecmp(args[0], "qreg")) {
     safe_boolean(ValidQregName(args[1]), buff, bp);
-  else if (!strcasecmp(args[0], "colorname"))
+  } else if (!strcasecmp(args[0], "colorname")) {
     safe_boolean(valid_color_name(args[1]), buff, bp);
-  else if (!strcasecmp(args[0], "ansicodes")) {
+  } else if (!strcasecmp(args[0], "ansicodes")) {
     ansi_data colors;
     safe_boolean(!define_ansi_data(&colors, args[1]), buff, bp);
   } else if (!strcasecmp(args[0], "channel")) {
@@ -123,8 +128,9 @@ FUNCTION(fun_valid)
     }
     lt = check_lock_type(executor, target, args[1], 1);
     safe_boolean((lt != NULL), buff, bp);
-  } else
+  } else {
     safe_str("#-1", buff, bp);
+  }
 }
 
 /* ARGSUSED */
@@ -474,8 +480,7 @@ FUNCTION(fun_listq)
         types |= PE_REGS_SWITCH;
       else if (strcasecmp("iter", item) == 0)
         types |= PE_REGS_ITER;
-      else if (strcasecmp("args", item) == 0 ||
-               strcasecmp("stack", item) == 0)
+      else if (strcasecmp("args", item) == 0 || strcasecmp("stack", item) == 0)
         types |= PE_REGS_ARG;
       else {
         safe_str("#-1", buff, bp);
@@ -705,16 +710,15 @@ FUNCTION(fun_r)
   const char *s;
 
   if (nargs >= 2 && args[1] && *args[1]) {
-    if (strcasecmp("qregisters", args[1]) == 0)
+    if (string_prefix("qregisters", args[1]))
       type = PE_REGS_Q;
-    else if (strcasecmp("regexp", args[1]) == 0)
+    else if (string_prefix("regexp", args[1]))
       type = PE_REGS_REGEXP;
-    else if (strcasecmp("switch", args[1]) == 0)
+    else if (string_prefix("switch", args[1]))
       type = PE_REGS_SWITCH;
-    else if (strcasecmp("iter", args[1]) == 0)
+    else if (string_prefix("iter", args[1]))
       type = PE_REGS_ITER;
-    else if (strcasecmp("args", args[1]) == 0 ||
-             strcasecmp("stack", args[1]) == 0)
+    else if (string_prefix("args", args[1]) || string_prefix("stack", args[1]))
       type = PE_REGS_ARG;
     else {
       safe_str("#-1", buff, bp);
@@ -992,36 +996,39 @@ FUNCTION(fun_reswitch)
   char mstr[BUFFER_LEN], pstr[BUFFER_LEN], *dp;
   char const *sp;
   char *tbuf1;
-  int first = 1, found = 0, flags = 0;
-  int search, subpatterns, offsets[99];
-  pcre *re;
+  int first = 1, found = 0, flags = re_compile_flags;
+  int search, subpatterns;
+  pcre2_code *re;
+  pcre2_match_data *md;
   PE_REGS *pe_regs;
   ansi_string *mas = NULL;
-  const char *haystack;
+  const PCRE2_UCHAR *haystack;
   int haystacklen;
-  const char *errptr;
-  int erroffset;
-  pcre_extra *extra;
+  int errcode;
+  PCRE2_SIZE erroffset;
 
-  if (strstr(called_as, "ALL"))
+  if (strstr(called_as, "ALL")) {
     first = 0;
+  }
 
   if (strcmp(called_as, "RESWITCHI") == 0 ||
-      strcmp(called_as, "RESWITCHALLI") == 0)
-    flags = PCRE_CASELESS;
+      strcmp(called_as, "RESWITCHALLI") == 0) {
+    flags |= PCRE2_CASELESS;
+  }
 
   dp = mstr;
   sp = args[0];
   if (process_expression(mstr, &dp, &sp, executor, caller, enactor, eflags,
-                         PT_DEFAULT, pe_info))
+                         PT_DEFAULT, pe_info)) {
     return;
+  }
   *dp = '\0';
   if (has_markup(mstr)) {
     mas = parse_ansi_string(mstr);
-    haystack = mas->text;
+    haystack = (const PCRE2_UCHAR *) mas->text;
     haystacklen = mas->len;
   } else {
-    haystack = mstr;
+    haystack = (const PCRE2_UCHAR *) mstr;
     haystacklen = dp - mstr;
   }
 
@@ -1031,24 +1038,26 @@ FUNCTION(fun_reswitch)
 
   /* try matching, return match immediately when found */
 
-  for (j = 1; j < (nargs - 1); j += 2) {
+  for (j = 1; j < (nargs - 1) && !cpu_time_limit_hit; j += 2) {
     dp = pstr;
     sp = args[j];
     if (process_expression(pstr, &dp, &sp, executor, caller, enactor, eflags,
-                           PT_DEFAULT, pe_info))
+                           PT_DEFAULT, pe_info)) {
       goto exit_sequence;
+    }
     *dp = '\0';
 
-    if ((re = pcre_compile(remove_markup(pstr, NULL), flags, &errptr,
-                           &erroffset, tables)) == NULL) {
+    if ((re = pcre2_compile((const PCRE2_UCHAR *) remove_markup(pstr, NULL),
+                            PCRE2_ZERO_TERMINATED, flags, &errcode, &erroffset,
+                            re_compile_ctx)) == NULL) {
       /* Matching error. Ignore this one, move on. */
       continue;
     }
     ADD_CHECK("pcre");
-    extra = default_match_limit();
+    md = pcre2_match_data_create_from_pattern(re, NULL);
     search = 0;
-    subpatterns =
-      pcre_exec(re, extra, haystack, haystacklen, search, 0, offsets, 99);
+    subpatterns = pcre2_match(re, haystack, haystacklen, search, re_match_flags,
+                              md, re_match_ctx);
     if (subpatterns >= 0) {
       /* If there's a #$ in a switch's action-part, replace it with
        * the value of the conditional (mstr) before evaluating it.
@@ -1059,16 +1068,17 @@ FUNCTION(fun_reswitch)
       /* set regexp context here */
       pe_regs_clear(pe_regs);
       if (mas) {
-        pe_regs_set_rx_context_ansi(pe_regs, 0, re, offsets, subpatterns, mas);
+        pe_regs_set_rx_context_ansi(pe_regs, 0, re, md, subpatterns, mas);
       } else {
-        pe_regs_set_rx_context(pe_regs, 0, re, offsets, subpatterns, mstr);
+        pe_regs_set_rx_context(pe_regs, 0, re, md, subpatterns);
       }
       per = process_expression(buff, bp, &sp, executor, caller, enactor,
                                eflags | PE_DOLLAR, PT_DEFAULT, pe_info);
       mush_free(tbuf1, "replace_string.buff");
       found = 1;
     }
-    pcre_free(re);
+    pcre2_code_free(re);
+    pcre2_match_data_free(md);
     DEL_CHECK("pcre");
     if ((first && found) || per) {
       goto exit_sequence;
@@ -1088,7 +1098,6 @@ exit_sequence:
   }
   pe_regs_restore(pe_info, pe_regs);
   pe_regs_free(pe_regs);
-  return;
 }
 
 /* ARGSUSED */
@@ -1170,75 +1179,68 @@ FUNCTION(fun_restarts) { safe_integer(globals.reboot_count, buff, bp); }
 
 extern char soundex_val[UCHAR_MAX + 1];
 
-/* The actual soundex routine */
-static char *
-soundex(char *str)
+enum sound_hash_type { HASH_SOUNDEX, HASH_PHONE };
+
+char *
+sound_hash(const char *str, int len, enum sound_hash_type type)
 {
-  static char tbuf1[BUFFER_LEN];
-  char *p;
+  sqlite3 *sqldb = get_shared_db();
+  sqlite3_stmt *hasher;
+  char *utf8, *result = NULL;
+  int ulen;
+  int status;
 
-  memset(tbuf1, '\0', 4);
+  switch (type) {
+  case HASH_SOUNDEX:
+    /* Classic Penn soundex turns a leading ph into f. This makes
+       sense but isn't typical. */
+    hasher = prepare_statement(sqldb,
+                               "VALUES (soundex(CASE WHEN ?1 LIKE 'ph%' THEN "
+                               "printf('f%s', substr(?1, 3)) ELSE ?1 END))",
+                               "hash.soundex");
+    break;
+  case HASH_PHONE:
+    hasher =
+      prepare_statement(sqldb, "VALUES (spellfix1_phonehash(?))", "hash.phone");
+    break;
+  default:
+    return NULL;
+  }
 
-  p = tbuf1;
-
-  /* First character is just copied */
-  *p = UPCASE(*str);
-  str++;
-  /* Special case for PH->F */
-  if ((UPCASE(*p) == 'P') && *str && (UPCASE(*str) == 'H')) {
-    *p = 'F';
-    str++;
+  utf8 = latin1_to_utf8(str, len, &ulen, "string");
+  sqlite3_bind_text(hasher, 1, utf8, ulen, free_string);
+  status = sqlite3_step(hasher);
+  if (status == SQLITE_ROW) {
+    result =
+      mush_strdup((const char *) sqlite3_column_text(hasher, 0), "string");
   }
-  p++;
-  /* Convert letters to soundex values, squash duplicates, skip accents and
-   * other non-ascii characters */
-  while (*str) {
-    if (!isalpha(*str) || *str > 127) {
-      str++;
-      continue;
-    }
-    *p = soundex_val[*str++];
-    if (*p != *(p - 1))
-      p++;
-  }
-  *p = '\0';
-  /* Remove zeros */
-  p = str = tbuf1;
-  while (*str) {
-    if (*str != '0')
-      *p++ = *str;
-    str++;
-  }
-  *p = '\0';
-  /* Pad/truncate to 4 chars */
-  if (tbuf1[1] == '\0')
-    tbuf1[1] = '0';
-  if (tbuf1[2] == '\0')
-    tbuf1[2] = '0';
-  if (tbuf1[3] == '\0')
-    tbuf1[3] = '0';
-  tbuf1[4] = '\0';
-  return tbuf1;
+  sqlite3_reset(hasher);
+  return result;
 }
 
 /* ARGSUSED */
 FUNCTION(fun_soundex)
 {
-  /* Returns the soundex code for a word. This 4-letter code is:
-   * 1. The first letter of the word (exception: ph -> f)
-   * 2. Replace each letter with a numeric code from the soundex table
-   * 3. Remove consecutive numbers that are the same
-   * 4. Remove 0's
-   * 5. Truncate to 4 characters or pad with 0's.
-   * It's actually a bit messier than that to make it faster.
-   */
-  if (!args[0] || !*args[0] || !isalpha(*args[0]) || strchr(args[0], ' ')) {
-    safe_str(T("#-1 FUNCTION (SOUNDEX) REQUIRES A SINGLE WORD ARGUMENT"), buff,
-             bp);
-    return;
+  enum sound_hash_type type = HASH_SOUNDEX;
+  char *hashed;
+
+  if (nargs == 2) {
+    if (strcasecmp(args[1], "soundex") == 0) {
+      type = HASH_SOUNDEX;
+    } else if (strcasecmp(args[1], "phone") == 0) {
+      type = HASH_PHONE;
+    } else {
+      safe_str("#-1 UNKNOWN HASH TYPE", buff, bp);
+      return;
+    }
   }
-  safe_str(soundex(args[0]), buff, bp);
-  return;
+  hashed = sound_hash(args[0], arglens[0], type);
+  if (hashed) {
+    safe_str(hashed, buff, bp);
+    mush_free(hashed, "string");
+  } else {
+    safe_str("#-1 HASH ERROR", buff, bp);
+  }
 }
 
 /* ARGSUSED */
@@ -1248,16 +1250,29 @@ FUNCTION(fun_soundlike)
    * This can be optimized to go character-by-character, but
    * I deem the modularity to be more important. So there.
    */
-  char tbuf1[5];
-  if (!*args[0] || !*args[1] || !isalpha(*args[0]) || !isalpha(*args[1]) ||
-      strchr(args[0], ' ') || strchr(args[1], ' ')) {
-    safe_str(T("#-1 FUNCTION (SOUNDLIKE) REQUIRES TWO ONE-WORD ARGUMENTS"),
-             buff, bp);
-    return;
+  enum sound_hash_type type = HASH_SOUNDEX;
+  char *hash1, *hash2;
+
+  if (nargs == 3) {
+    if (strcasecmp(args[2], "soundex") == 0) {
+      type = HASH_SOUNDEX;
+    } else if (strcasecmp(args[2], "phone") == 0) {
+      type = HASH_PHONE;
+    } else {
+      safe_str("#-1 UNKNOWN HASH TYPE", buff, bp);
+      return;
+    }
   }
-  /* soundex uses a static buffer, so we need to save it */
-  strcpy(tbuf1, soundex(args[0]));
-  safe_boolean(!strcmp(tbuf1, soundex(args[1])), buff, bp);
+
+  hash1 = sound_hash(args[0], arglens[0], type);
+  hash2 = sound_hash(args[1], arglens[1], type);
+  if (!hash1 || !hash2) {
+    safe_str("#-1 HASH ERROR", buff, bp);
+  } else {
+    safe_boolean(strcmp(hash1, hash2) == 0, buff, bp);
+  }
+  mush_free(hash1, "string");
+  mush_free(hash2, "string");
 }
 
 /* ARGSUSED */
@@ -1331,18 +1346,24 @@ FUNCTION(fun_scan)
         safe_str(T(e_notvis), buff, bp);
         return;
       }
-      if (!See_All(executor) && !controls(executor, thing)) {
-        notify(executor, T("Permission denied."));
-        safe_str("#-1", buff, bp);
-        return;
-      }
     }
   }
+
+  if (!See_All(executor) && !controls(executor, thing)) {
+    notify(executor, T("Permission denied."));
+    safe_str("#-1", buff, bp);
+    return;
+  }
+
   if (nargs == 3 && arglens[2]) {
     prefstr = trim_space_sep(args[2], ' ');
     while ((thispref = split_token(&prefstr, ' '))) {
       if (strcasecmp("room", thispref) == 0)
         scan_type |= CHECK_HERE | CHECK_NEIGHBORS;
+      else if (strcasecmp("me", thispref) == 0)
+        scan_type |= CHECK_SELF;
+      else if (strcasecmp("inventory", thispref) == 0)
+        scan_type |= CHECK_INVENTORY;
       else if (strcasecmp("self", thispref) == 0)
         scan_type |= CHECK_SELF | CHECK_INVENTORY;
       else if (strcasecmp("zone", thispref) == 0)
@@ -1362,7 +1383,7 @@ FUNCTION(fun_scan)
   }
   if ((scan_type & ~CHECK_BREAK) == 0)
     scan_type |= CHECK_ALL;
-  safe_str(scan_list(thing, cmdptr, scan_type), buff, bp);
+  safe_str(scan_list(executor, thing, cmdptr, scan_type), buff, bp);
 }
 
 enum whichof_t { DO_FIRSTOF, DO_ALLOF };

@@ -138,7 +138,7 @@ do_name(dbref player, const char *name, char *newname_)
       flag_broadcast("WIZARD", 0,
                      T("Broadcast: Suspect %s changed name to %s."),
                      Name(thing), newname);
-    reset_player_list(thing, Name(thing), NULL, newname, NULL);
+    reset_player_list(thing, newname, alias);
   }
   set_name(thing, newname);
   if (alias) {
@@ -174,8 +174,10 @@ do_name(dbref player, const char *name, char *newname_)
  * \param newobj name of new owner for object.
  * \param preserve if 1, preserve privileges and don't halt the object.
  * \param pe_info the pe_info for lock checks
+ * \retval 0 failed to change owner.
+ * \retval 1 successfully changed owner.
  */
-void
+int
 do_chown(dbref player, const char *name, const char *newobj, int preserve,
          NEW_PE_INFO *pe_info)
 {
@@ -185,42 +187,42 @@ do_chown(dbref player, const char *name, const char *newobj, int preserve,
 
   /* check for '@chown <object>/<atr>=<player>'  */
   if (strchr(name, '/')) {
-    do_atrchown(player, name, newobj);
-    return;
+    int retval = do_atrchown(player, name, newobj);
+    return retval;
   }
   if (Wizard(player))
     match_flags |= MAT_PLAYER;
 
   if ((thing = noisy_match_result(player, name, TYPE_THING, match_flags)) ==
       NOTHING)
-    return;
+    return 0;
 
   if (!*newobj || !strcasecmp(newobj, "me")) {
     newowner = player;
   } else {
     if ((newowner = lookup_player(newobj)) == NOTHING) {
       notify(player, T("I couldn't find that player."));
-      return;
+      return 0;
     }
   }
 
   if (IsPlayer(thing) && !God(player)) {
     notify(player, T("Players always own themselves."));
-    return;
+    return 0;
   }
   /* Permissions checking */
   if (!chown_ok(player, thing, newowner, pe_info)) {
     notify(player, T("Permission denied."));
-    return;
+    return 0;
   }
   if (IsThing(thing) && !Hasprivs(player) &&
       !(GoodObject(Location(thing)) && (Location(thing) == player))) {
     notify(player, T("You must carry the object to @chown it."));
-    return;
+    return 0;
   }
   if (preserve && !Wizard(player)) {
     notify(player, T("You cannot @CHOWN/PRESERVE. Use normal @CHOWN."));
-    return;
+    return 0;
   }
   /* chowns to the zone master don't count towards fees */
   if (!ZMaster(newowner)) {
@@ -230,7 +232,7 @@ do_chown(dbref player, const char *name, const char *newobj, int preserve,
       if (newowner != player)
         notify(player, T("That player doesn't have enough money or quota to "
                          "receive that object."));
-      return;
+      return 0;
     }
     /* Credit the current owner */
     giveto(Owner(thing), Pennies(thing));
@@ -238,6 +240,7 @@ do_chown(dbref player, const char *name, const char *newobj, int preserve,
   }
   chown_object(player, thing, newowner, preserve);
   notify(player, T("Owner changed."));
+  return 1;
 }
 
 static int
@@ -340,16 +343,19 @@ chown_object(dbref player, dbref thing, dbref newowner, int preserve)
     Powers(thing) = new_flag_bitmask("POWER");
     do_halt(thing, "", thing);
   } else {
-    if ((newowner != player) && Wizard(thing) && !God(player)) {
-      notify_format(player, T("Warning: WIZ flag reset on #%d because "
-                              "@CHOWN/PRESERVE is to a third party."),
+    if (preserve == 1 && (newowner != player) && Wizard(thing) &&
+        !Wizard(newowner)) {
+      notify_format(player,
+                    T("Warning: WIZ flag reset on #%d because "
+                      "@CHOWN/PRESERVE is to a non-WIZ flagged third-party."),
                     thing);
       clear_flag_internal(thing, "WIZARD");
     }
     if (!null_flagmask("POWER", Powers(thing)) || Wizard(thing) ||
         Royalty(thing) || Inherit(thing))
-      notify_format(player, T("Warning: @CHOWN/PRESERVE on an object (#%d) "
-                              "with WIZ, ROY, INHERIT, or @power privileges."),
+      notify_format(player,
+                    T("Warning: @CHOWN/PRESERVE on an object (#%d) "
+                      "with WIZ, ROY, INHERIT, or @power privileges."),
                     thing);
   }
 }
@@ -543,7 +549,7 @@ copy_attrib_flags(dbref player, dbref target, ATTR *atr, int flags)
                   AName(target, AN_SYS, NULL), AL_NAME(atr));
     return;
   }
-  if (AL_FLAGS(atr) & AF_ROOT)
+  if (AF_Root(atr))
     flags |= AF_ROOT;
   else
     flags &= ~AF_ROOT;
@@ -589,7 +595,7 @@ do_attrib_flags(dbref player, const char *obj, const char *atrname,
 
   af.clrflags = mush_strdup(atrflag_to_string(af.clrf), "af_flag list");
   af.setflags = mush_strdup(atrflag_to_string(af.setf), "af_flag list");
-  if (!atr_iter_get(player, thing, atrname, 0, 0, af_helper, &af))
+  if (!atr_iter_get(player, thing, atrname, AIG_NONE, af_helper, &af))
     notify(player, T("No attribute found to change."));
   mush_free(af.clrflags, "af_flag list");
   mush_free(af.setflags, "af_flag list");
@@ -690,6 +696,8 @@ do_cpattr(dbref player, char *oldpair, char **newpair, int move, int noflagcopy)
 {
   dbref oldobj, newobj;
   char tbuf1[BUFFER_LEN], tbuf2[BUFFER_LEN];
+  char origname[ATTRIBUTE_NAME_LIMIT];
+  uint32_t origflags = 0;
   int i;
   char *p, *q;
   ATTR *a;
@@ -702,7 +710,7 @@ do_cpattr(dbref player, char *oldpair, char **newpair, int move, int noflagcopy)
     return;
   }
   /* find the old object */
-  strcpy(tbuf1, oldpair);
+  mush_strncpy(tbuf1, oldpair, sizeof tbuf1);
   p = strchr(tbuf1, '/');
   if (!p || !*p) {
     notify(player, T("What object do you want to copy the attribute from?"));
@@ -710,13 +718,13 @@ do_cpattr(dbref player, char *oldpair, char **newpair, int move, int noflagcopy)
   }
   *p++ = '\0';
   oldobj = noisy_match_result(player, tbuf1, NOTYPE, MAT_EVERYTHING);
-  if (!GoodObject(oldobj))
+  if (!GoodObject(oldobj)) {
     return;
+  }
 
-  strcpy(tbuf2, p);
-  p = tbuf2;
+  p = strupper_r(p, tbuf2, sizeof tbuf2);
   /* find the old attribute */
-  a = atr_get_noparent(oldobj, strupper(p));
+  a = atr_get_noparent(oldobj, p);
   if (!a) {
     notify(player, T("No such attribute to copy from."));
     return;
@@ -727,29 +735,35 @@ do_cpattr(dbref player, char *oldpair, char **newpair, int move, int noflagcopy)
     return;
   }
   /* we can read it. Copy the value. */
+  mush_strncpy(origname, AL_NAME(a), sizeof origname);
   text = safe_atr_value(a, "atrval.cpattr");
+  origflags = AL_FLAGS(a);
 
   /* now we loop through our new object pairs and copy, calling @set. */
   for (i = 1; i < MAX_ARG && (newpair[i] != NULL); i++) {
     if (!*newpair[i]) {
       notify(player, T("What do you want to copy to?"));
     } else {
-      strcpy(tbuf1, newpair[i]);
+      mush_strncpy(tbuf1, newpair[i], sizeof tbuf1);
       q = strchr(tbuf1, '/');
       if (!q || !*q) {
-        q = (char *) AL_NAME(a);
+        q = origname;
       } else {
         *q++ = '\0';
       }
       newobj = noisy_match_result(player, tbuf1, NOTYPE, MAT_EVERYTHING);
       if (GoodObject(newobj) &&
-          ((newobj != oldobj) || strcasecmp(AL_NAME(a), q)) &&
+          ((newobj != oldobj) || strcasecmp(origname, q) != 0) &&
           (do_set_atr(newobj, q, text, player, 1) == 1)) {
         copies++;
         /* copy the attribute flags too */
-        if (!noflagcopy)
-          copy_attrib_flags(player, newobj,
-                            atr_get_noparent(newobj, strupper(q)), a->flags);
+        if (!noflagcopy) {
+          char tmp[BUFFER_LEN];
+          copy_attrib_flags(
+            player, newobj,
+            atr_get_noparent(newobj, strupper_r(q, tmp, sizeof tmp)),
+            origflags);
+        }
       }
     }
   }
@@ -758,8 +772,9 @@ do_cpattr(dbref player, char *oldpair, char **newpair, int move, int noflagcopy)
   if (copies) {
     notify_format(player, T("Attribute %s (%d copies)"),
                   (move ? T("moved") : T("copied")), copies);
-    if (move)
-      do_set_atr(oldobj, AL_NAME(a), NULL, player, 1);
+    if (move) {
+      do_set_atr(oldobj, origname, NULL, player, 1);
+    }
   } else {
     notify_format(player, T("Unable to %s attribute."),
                   (move ? T("move") : T("copy")));
@@ -984,7 +999,7 @@ do_edit(dbref player, char *it, char **argv, int flags)
   args.skipped = 0;
   args.edited = 0;
 
-  if (!atr_iter_get(player, thing, q, 0, 0, edit_helper, &args))
+  if (!atr_iter_get(player, thing, q, AIG_NONE, edit_helper, &args))
     notify(player, T("No matching attributes."));
   else if (flags & EDIT_QUIET)
     notify_format(player, T("%d attributes edited, %d skipped."), args.edited,
@@ -995,9 +1010,9 @@ extern const unsigned char *tables; /* for do_edit_regexp */
 
 /** Argument struct for edit_helper */
 struct regedit_args {
-  int flags; /**< The type of edit */
-  pcre *re;  /**< Regexp to match string against */
-  pcre_extra *extra;
+  int flags;      /**< The type of edit */
+  pcre2_code *re; /**< Regexp to match string against */
+  pcre2_match_data *md;
   char *to;             /**< Replacement string. */
   int edited;           /**< Number of attributes edited */
   int skipped;          /**< Number of attributes skipped */
@@ -1021,9 +1036,8 @@ regedit_helper(dbref player, dbref thing,
   ansi_string *hilite, *repl;
   const char *r;
   PE_REGS *pe_regs;
-  int search;
+  PCRE2_SIZE search;
   int subpatterns;
-  int offsets[99];
   int ansi_long_flag = 0;
 
   gargs = args;
@@ -1051,16 +1065,17 @@ regedit_helper(dbref player, dbref thing,
   search = 0;
   /* Do all the searches and replaces we can */
   do {
-    subpatterns = pcre_exec(gargs->re, gargs->extra, haystack->text,
-                            haystack->len, search, 0, offsets, 99);
+    subpatterns = pcre2_match(gargs->re, (const PCRE2_UCHAR *) haystack->text,
+                              haystack->len, search, re_match_flags, gargs->md,
+                              re_match_ctx);
     if (subpatterns >= 0) {
       edited = 1;
       /* We have a match */
       /* Process the replacement */
       r = gargs->to;
       pe_regs_clear(pe_regs);
-      pe_regs_set_rx_context_ansi(pe_regs, 0, gargs->re, offsets, subpatterns,
-                                  haystack);
+      pe_regs_set_rx_context_ansi(pe_regs, 0, gargs->re, gargs->md,
+                                  subpatterns, haystack);
       tbp = tbuf;
       if (process_expression(tbuf, &tbp, &r, player, player, player,
                              PE_DEFAULT | PE_DOLLAR, PT_DEFAULT,
@@ -1069,7 +1084,8 @@ regedit_helper(dbref player, dbref thing,
         break;
       }
       *tbp = '\0';
-      if (offsets[0] >= search) {
+      if (pcre2_get_startchar(gargs->md) >= search) {
+        PCRE2_SIZE *offsets = pcre2_get_ovector_pointer(gargs->md);
         repl = parse_ansi_string(tbuf);
 
         /* Do the replacement */
@@ -1105,14 +1121,15 @@ regedit_helper(dbref player, dbref thing,
         }
 
         free_ansi_string(repl);
-        if (search >= haystack->len)
+        if (search >= (PCRE2_SIZE) haystack->len) {
           break;
+        }
       } else {
         break;
       }
     }
   } while (subpatterns >= 0 && !(gargs->flags & EDIT_FIRST) &&
-           !gargs->call_limit_hit);
+           !gargs->call_limit_hit && !cpu_time_limit_hit);
 
   if (gargs->call_limit_hit) {
     /* Bail out */
@@ -1140,9 +1157,8 @@ regedit_helper(dbref player, dbref thing,
     *tbufp = '\0';
     tbufp = tbuf1;
     tbufap = tbuf_ansi;
-    if (!ansi_long_flag &&
-        !safe_ansi_string(display_str, 0, display_str->len, tbuf_ansi,
-                          &tbufap)) {
+    if (!ansi_long_flag && !safe_ansi_string(display_str, 0, display_str->len,
+                                             tbuf_ansi, &tbufap)) {
       *tbufap = '\0';
       tbufp = tbuf_ansi;
     }
@@ -1186,10 +1202,9 @@ do_edit_regexp(dbref player, char *it, char **argv, int flags,
   char tbuf1[BUFFER_LEN];
   char *q;
   struct regedit_args args;
-  pcre *re = NULL;
-  pcre_extra *extra, *study = NULL;
-  const char *errptr;
-  int erroffset;
+  pcre2_code *re = NULL;
+  int errcode;
+  PCRE2_SIZE erroffset;
 
   if (!(it && *it)) {
     notify(player, T("I need to know what you want to edit."));
@@ -1213,27 +1228,19 @@ do_edit_regexp(dbref player, char *it, char **argv, int flags,
     return;
   }
 
-  if ((re = pcre_compile(remove_markup(argv[1], NULL),
-                         (flags & EDIT_CASE ? 0 : PCRE_CASELESS), &errptr,
-                         &erroffset, tables)) == NULL) {
-    notify_format(player, T("Invalid regexp: %s"), errptr);
+  if ((re = pcre2_compile((const PCRE2_UCHAR *)remove_markup(argv[1], NULL), PCRE2_ZERO_TERMINATED,
+                          (flags & EDIT_CASE ? 0 : PCRE2_CASELESS) |
+                            re_compile_flags,
+                          &errcode, &erroffset, re_compile_ctx)) == NULL) {
+    char errmsg[120];
+    pcre2_get_error_message(errcode, (PCRE2_UCHAR *) errmsg, sizeof errmsg);
+    notify_format(player, T("Invalid regexp: %s"), errmsg);
     return;
   }
   ADD_CHECK("pcre");
-  study = pcre_study(re, pcre_public_study_flags, &errptr);
-  if (errptr != NULL) {
-    pcre_free(re);
-    DEL_CHECK("pcre");
-    notify_format(player, T("Invalid regexp: %s"), errptr);
-    return;
-  }
-  ADD_CHECK("pcre.extra");
-
-  extra = study;
-  set_match_limit(extra);
-
+  pcre2_jit_compile(re, PCRE2_JIT_COMPLETE);
   args.re = re;
-  args.extra = extra;
+  args.md = pcre2_match_data_create_from_pattern(re, NULL);
   args.to = argv[2];
   args.flags = flags;
   args.skipped = 0;
@@ -1241,20 +1248,16 @@ do_edit_regexp(dbref player, char *it, char **argv, int flags,
   args.pe_info = pe_info;
   args.call_limit_hit = 0;
 
-  if (!atr_iter_get(player, thing, q, 0, 0, regedit_helper, &args))
+  if (!atr_iter_get(player, thing, q, AIG_NONE, regedit_helper, &args)) {
     notify(player, T("No matching attributes."));
-  else if (flags & EDIT_QUIET)
+  } else if (flags & EDIT_QUIET) {
     notify_format(player, T("%d attributes edited, %d skipped."), args.edited,
                   args.skipped);
+  }
 
-  pcre_free(re);
+  pcre2_code_free(re);
+  pcre2_match_data_free(args.md);
   DEL_CHECK("pcre");
-#ifdef PCRE_CONFIG_JIT
-  pcre_free_study(study);
-#else
-  pcre_free(study);
-#endif
-  DEL_CHECK("pcre.extra");
 }
 
 /** Trigger an attribute.
@@ -1265,13 +1268,13 @@ do_edit_regexp(dbref player, char *it, char **argv, int flags,
  * \param enactor the enactor.
  * \param object the object/attribute pair.
  * \param argv array of arguments.
- * \param queue_entry parent queue entry
+ * \param parent_queue parent queue entry
  * \param flags Use the enactor, instead of the executor, as the enactor of the
  * triggered attr?
  */
 void
 do_trigger(dbref executor, dbref enactor, char *object, char **argv,
-           MQUE *queue_entry, int flags)
+           MQUE *parent_queue, int flags)
 {
   dbref thing;
   char *attrib;
@@ -1279,7 +1282,18 @@ do_trigger(dbref executor, dbref enactor, char *object, char **argv,
   int i;
   dbref triggerer = executor; /* triggerer is totally a word. Shut up. */
   bool control;
-  int qflags = (queue_entry->queue_type & QUEUE_EVENT);
+  char *input = NULL;
+  int qflags = parent_queue->queue_type & QUEUE_EVENT;
+
+  if (flags & TRIGGER_INLINE) {
+    qflags |= QUEUE_INPLACE;
+    if (flags & TRIGGER_NOBREAK)
+      qflags |= QUEUE_NO_BREAKS;
+    if (flags & TRIGGER_CLEARREGS)
+      qflags |= QUEUE_CLEAR_QREG;
+    if (flags & TRIGGER_LOCALIZE)
+      qflags |= QUEUE_PRESERVE_QREG;
+  }
 
   if (!(attrib = strchr(object, '/')) || !*(attrib + 1)) {
     notify(executor, T("I need to know what attribute to trigger."));
@@ -1315,16 +1329,22 @@ do_trigger(dbref executor, dbref enactor, char *object, char **argv,
     pe_regs = pe_regs_create(PE_REGS_ARG, "do_trigger");
   else
     pe_regs = pe_regs_create(PE_REGS_ARG | PE_REGS_Q, "do_trigger");
-  for (i = 0; i < 10; i++) {
-    if (argv[i + 1]) {
-      pe_regs_setenv_nocopy(pe_regs, i, argv[i + 1]);
+  if (flags & TRIGGER_MATCH) {
+    input = argv[1];
+  } else {
+    for (i = 0; i < (MAX_ARG - 1); i++) {
+      if (argv[i + 1]) {
+        pe_regs_setenv_nocopy(pe_regs, i, argv[i + 1]);
+      }
     }
   }
   if (!(flags & TRIGGER_CLEARREGS))
-    pe_regs_qcopy(pe_regs, queue_entry->pe_info->regvals);
+    pe_regs_qcopy(pe_regs, parent_queue->pe_info->regvals);
 
+  if (!(flags & TRIGGER_INLINE))
+    parent_queue = NULL;
   if (queue_attribute_base_priv(thing, upcasestr(attrib), triggerer, 0, pe_regs,
-                                qflags, executor)) {
+                                qflags, executor, parent_queue, input)) {
     if (!AreQuiet(executor, thing))
       notify_format(executor, T("%s - Triggered."), AName(thing, AN_SYS, NULL));
   } else {
@@ -1496,14 +1516,17 @@ wipe_helper(dbref player, dbref thing, dbref parent __attribute__((__unused__)),
     notify_format(player, T("Unable to wipe attribute %s"), AL_NAME(atr));
     return 0;
   case AE_TREE:
-    notify_format(player, T("Attribute %s cannot be wiped because a child "
-                            "attribute cannot be wiped."),
+    notify_format(player,
+                  T("Attribute %s cannot be wiped because a child "
+                    "attribute cannot be wiped."),
                   AL_NAME(atr));
   /* Fall through */
   default:
     return saved_count - AttrCount(thing);
   }
 }
+
+bool in_wipe = false;
 
 /** Clear an attribute.
  * \verbatim
@@ -1543,8 +1566,9 @@ do_wipe(dbref player, char *name)
     notify(player, T("That object is protected."));
     return;
   }
-
-  wiped = atr_iter_get(player, thing, pattern, 0, 0, wipe_helper, NULL);
+  in_wipe = true;
+  wiped = atr_iter_get(player, thing, pattern, AIG_NONE, wipe_helper, NULL);
+  in_wipe = false;
   switch (wiped) {
   case 0:
     notify(player, T("No attributes wiped."));

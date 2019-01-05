@@ -66,9 +66,6 @@
 #define IDLE_COMMAND "IDLE"       /**< The IDLE command */
 #define MSSPREQUEST_COMMAND "MSSP-REQUEST" /**< The MSSP-REQUEST command */
 
-#define GET_COMMAND "GET"   /**< The GET command, for recognising browsers */
-#define POST_COMMAND "POST" /**< The POST command, for recognising browsers */
-
 #define PREFIX_COMMAND "OUTPUTPREFIX" /**< The OUTPUTPREFIX command */
 #define SUFFIX_COMMAND "OUTPUTSUFFIX" /**< The OUTPUTSUFFIX command */
 /** The PUEBLOCLIENT command, sent by a client to signifiy its support of Pueblo
@@ -92,9 +89,19 @@
  */
 #define SPILLOVER_THRESHOLD 0
 /* #define SPILLOVER_THRESHOLD  (MAX_OUTPUT / 2) */
-#define COMMAND_TIME_MSEC 1000 /* time slice length in milliseconds */
+
+/* Descriptor Command Quotas:
+ *
+ * Descriptors can have up to COMMAND_BURST_SIZE commands in an immediate
+ * burst, but after that goes down, it replenishes at COMMANDS_PER_SECOND per
+ * second.
+ *
+ * e.g: After pasting a file that contains 120 lines, the first 100 take 1
+ * second, then the next 20 lines are run once each second. But 50 seconds after
+ * it's finished, the quota is back up to 50.
+ */
 #define COMMAND_BURST_SIZE 100 /* commands allowed per user in a burst */
-#define COMMANDS_PER_TIME 1    /* commands per time slice after burst */
+#define COMMANDS_PER_SECOND 1  /* commands per second, prorated by ms. */
 
 /* From conf.c */
 bool config_file_startup(const char *conf, int restrictions);
@@ -153,8 +160,9 @@ struct options_table {
   int ssl_port;       /**< The port to listen for SSL connections */
   char
     socket_file[FILE_PATH_LEN]; /**< The socket filename to use for SSL slave */
-  int use_ws;             /**< True to enable websockets */
-  char ws_url[FILE_PATH_LEN];   /**< path to recognize as websocket one in HTTP requests. */
+  int use_ws;                   /**< True to enable websockets */
+  char ws_url[FILE_PATH_LEN];   /**< path to recognize as websocket one in HTTP
+                                   requests. */
   char input_db[FILE_PATH_LEN]; /**< Name of the input database file */
   char output_db[FILE_PATH_LEN]; /**< Name of the output database file */
   char crash_db[FILE_PATH_LEN];  /**< Name of the panic database file */
@@ -166,6 +174,9 @@ struct options_table {
   dbref ancestor_thing;   /**< The ultimate parent thing (help ancestors) */
   dbref ancestor_player;  /**< The ultimate parent player (help ancestors) */
   dbref event_handler;    /**< The Event Handler (help events). */
+  dbref http_handler;     /**< The HTTP Handler (GET, POST, etc) */
+  int http_per_second;    /**< Maximum number of commands run from http every
+                             second */
   int connect_fail_limit; /**< Maximum number of connect fails in 10 mins. */
   int idle_timeout;       /**< Maximum idle time allowed, in minutes */
   int unconnected_idle_timeout; /**< Maximum idle time for connections without
@@ -185,13 +196,11 @@ struct options_table {
   int starting_money; /**< Number of pennies for newly created players */
   int starting_quota; /**< Object quota for newly created players */
   int player_queue_limit; /**< Maximum commands a player can queue at once */
-  int queue_chunk;    /**< Number of commands run from queue when no input from
-                         sockets is waiting */
-  int active_q_chunk; /**< Number of commands run from queue when input from
-                         sockets is waiting */
-  int func_nest_lim;  /**< Maximum function recursion depth */
-  int func_invk_lim;  /**< Maximum number of function invocations */
-  int call_lim;       /**< Maximum parser calls allowed in a queue cycle */
+  int queue_chunk;   /**< Number of commands run from queue when no input from
+                        sockets is waiting */
+  int func_nest_lim; /**< Maximum function recursion depth */
+  int func_invk_lim; /**< Maximum number of function invocations */
+  int call_lim;      /**< Maximum parser calls allowed in a queue cycle */
   char log_wipe_passwd[256];  /**< Password for logwipe command */
   char money_singular[32];    /**< Currency unit name, singular */
   char money_plural[32];      /**< Currency unit name, plural */
@@ -209,10 +218,10 @@ struct options_table {
   char motd_file[2][FILE_PATH_LEN];    /**< Names of text and html motd files */
   char wizmotd_file[2]
                    [FILE_PATH_LEN]; /**< Names of text and html wizmotd files */
-  char newuser_file[2][FILE_PATH_LEN]; /**< Names of text and html new user
-                                          files */
-  char register_file
-    [2][FILE_PATH_LEN]; /**< Names of text and html registration files */
+  char newuser_file[2][FILE_PATH_LEN];  /**< Names of text and html new user
+                                           files */
+  char register_file[2][FILE_PATH_LEN]; /**< Names of text and html registration
+                                           files */
   char quit_file[2][FILE_PATH_LEN];  /**< Names of text and html disconnection
                                         files */
   char down_file[2][FILE_PATH_LEN];  /**< Names of text and html server down
@@ -228,7 +237,7 @@ struct options_table {
   int guest_allow;                   /**< Are guests allowed to log in? */
   int create_allow;                  /**< Can new players be created? */
   int reverse_shs; /**< Should the SHS routines assume little-endian byte order?
-                      */
+                    */
   char player_flags[BUFFER_LEN];  /**< Space-separated list of flags to set on
                                      newly created players. */
   char room_flags[BUFFER_LEN];    /**< Space-separated list of flags to set on
@@ -250,13 +259,13 @@ struct options_table {
   int noisy_whisper;           /**< Does whisper default to whisper/noisy? */
   int possessive_get;          /**< Can possessive get be used? */
   int possessive_get_d; /**< Can possessive get be used on disconnected players?
-                           */
+                         */
   int really_safe;      /**< Does the SAFE flag protect objects from nuke */
   int destroy_possessions; /**< Are the possessions of a nuked player nuked? */
   dbref probate_judge;     /**< Who owns the possessions if they're not? */
   int null_eq_zero;  /**< Is null string treated as 0 in math functions? */
   int tiny_booleans; /**< Do strings and db#'s evaluate as false, like TinyMUSH?
-                        */
+                      */
   int tiny_trim_fun; /**< Does the trim function take arguments in TinyMUSH
                         order? */
   int tiny_math;  /**< Can you use strings in math functions, like TinyMUSH? */
@@ -331,8 +340,8 @@ struct options_table {
   int chunk_migrate_amount;   /**< Number of attrs to migrate each second */
   char attr_compression[256]; /**< How to compress attribute text in-memory */
   int read_remote_desc; /**< Can players read DESCRIBE attribute remotely? */
-  char ssl_private_key_file
-    [FILE_PATH_LEN];               /**< File to load the server's cert from */
+  char ssl_private_key_file[FILE_PATH_LEN]; /**< File to load the server's cert
+                                               from */
   char ssl_ca_file[FILE_PATH_LEN]; /**< File to load the CA certs from */
   char ssl_ca_dir[FILE_PATH_LEN];  /**< Directory to load the CA certs from */
   int ssl_require_client_cert;   /**< Are clients required to present certs? */
@@ -354,6 +363,12 @@ struct options_table {
   int log_max_size;                /**< Maximum size of log file */
   char log_size_policy[256];       /**< What to do when a log file is big. */
   char sendmail_prog[256];         /**< Program used to send email. */
+  char help_db[FILE_PATH_LEN];     /**< Sqlite3 file to use for help db. */
+  int use_connlog;                 /**< Enable connlog record keeping. */
+  char
+    connlog_db[FILE_PATH_LEN]; /**< Sqlite3 file to use for connection logs. */
+  char dict_file[FILE_PATH_LEN]; /**< List of words to load into suggest() db */
+  char colors_file[FILE_PATH_LEN]; /**< JSON file holding the colors database */
 };
 
 typedef struct mssp MSSP;
@@ -401,6 +416,7 @@ int can_view_config_option(dbref player, PENNCONF *opt);
 #define MAX_NAMED_QREGS (options.max_named_qregs)
 
 /* dbrefs are in the conf file */
+#define USABLE(X) (GoodObject(X) && !IsGarbage(X) && !Halted(X))
 
 #define TINYPORT (options.port)
 #define SSLPORT (options.ssl_port)
@@ -411,6 +427,8 @@ int can_view_config_option(dbref player, PENNCONF *opt);
 #define ANCESTOR_THING (options.ancestor_thing)
 #define ANCESTOR_PLAYER (options.ancestor_player)
 #define EVENT_HANDLER (options.event_handler)
+#define HTTP_HANDLER (options.http_handler)
+#define HTTP_SECOND_LIMIT (options.http_per_second)
 #define MONEY (options.money_singular)
 #define MONIES (options.money_plural)
 #define WHISPER_LOUDNESS (options.whisper_loudness)

@@ -65,12 +65,12 @@ These '@' commands are only usable by wizards or privileged players:
  
   @allhalt       @allquota      @boot          @chownall      @chzoneall
   @comment       @dbck          @disable       @dump          @enable
-  @flag          @hide          @hook          @kick          @log           
-  @motd          @newpassword   @pcreate       @poll          @poor          
-  @power         @purge         @quota         @readcache     @rejectmotd    
-  @shutdown      @sitelock      @sql           @squota        @uptime        
-  @wall          @wizmotd       @wizwall       cd             ch             
-  cv
+  @flag          @hide          @hook          @http          @kick
+  @log           @motd          @newpassword   @pcreate       @poll
+  @poor          @power         @purge         @quota         @readcache
+  @respond       @rejectmotd    @shutdown      @sitelock      @sql
+  @squota        @suggest       @uptime        @wall          @wizmotd
+  @wizwall       cd             ch             cv
  
 & ]
   "]" is a special prefix which can be used before any command. It instructs the MUSH that it shouldn't evaluate the arguments to the command (similar to the "/noeval" switch available on some commands). For example:
@@ -520,7 +520,7 @@ See also: QUIT, LOGOUT
   @break[/queued] <boolean>[=<action list>]
   @assert[/queued] <boolean>[=<action list>]
 
-  @break stops the execution of further commands in the current action list if <boolean> is a true value. It doesn't affect new queue entries made by previous commands in the action list. It can be useful for doing error checking without having to nest @switches and suffer from delayed execution because of queueing.
+  @break stops the execution of further commands in the current action list if <boolean> is a true value. It doesn't affect new queue entries made by previous commands in the action list. It can be useful for doing error checking without having to nest @switches.
   
   If <action list> is given, it is executed instead of the rest of the commands in the current action list. By default, <action list> is run immediately, replacing the rest of the action list @break was called in. If the /queued switch is given, <action list> will instead be queued to be run later. @break also accepts an /inline switch, for Rhost compatability; this switch does nothing on PennMUSH.
 
@@ -965,33 +965,37 @@ See also: look, @adescribe, @idescribe, @descformat
 & @destroy
 & @recycle
 & @nuke
-  @destroy[/override] <object>
+  @destroy[/override] <object>   or   @recyle[/override] <object>
   @nuke <object>
-  @undestroy <object>
 
-  The @destroy command marks <object> for destruction by setting the GOING flag on it. If <object> is a room, all the exits in the room are marked for destruction as well. If <object> is a player, and the @config option destroy_possessions is on, everything he owns is marked for destruction as well. (If really_safe is also on, his SAFE objects will not be destroyed.) If the adestroy @config option is on, the ADESTROY attribute will be triggered when the object is first @destroy'd.
+  The @destroy command marks <object> for destruction, or destroys <object> instantly if it was already marked for destruction. You must either control <object>, control its source or destination room (for exits), or it must be set DESTROY_OK and you must pass its @lock/destroy.
   
-  The MUSH checks for GOING objects every ten minutes or so (see '@config purge_interval'); each one is set with the GOING_TWICE flag, and will be destroyed totally on the next cycle. You can save it from destruction during this period using the @undestroy command, or @destroy it again to destroy it instantly.
-  
-  When an object is destroyed, any commands, @waits and semaphores it has queued are drained, and the object's owner has the quota for the object, and the initial cost of creating it, refunded.
-  
-  Continued in 'help @destroy2'.
-& @destroy2
+  To destroy objects set SAFE, you must use @destroy/override or @nuke. If the really_safe @config option is on, even @nuke can't destroy SAFE objects, and you must clear the SAFE flag first.
 
-  To destroy an object, you must either control it, control its source or destination room (for exits), or it must be set DESTROY_OK and you must pass its @lock/destroy.
-  
-  To destroy objects set SAFE, you must use @destroy/override or @nuke. If the really_safe @config option is on, even @nuke can't destroy SAFE objects, and you must clear the safe flag first.
-  
-  Players can only be @destroyed when they are not connected, and even then can only be destroyed by a Wizard player. If the destroy_possessions @config option is on, anything the player owns is @destroyed. If the really_safe option is also on, his SAFE possessions are @chown'd to God instead. If the option is off, all their possessions are @chown'd to God.
+  @recycle is an alias for @destroy. Some MUSHes disable @destroy and only use @recycle, to avoid players mistyping. @nuke is an alias for @destroy/override.
 
-  @recycle is an alias for @destroy. Some MUSHes disable @destroy and only use @recycle, to avoid players mistyping.
-  
+  See 'help @destroy2' for a description of the destruction process.
 See also: @undestroy, @create, @dig, @open, DESTROY_OK, SAFE
+& @destroy2
+& DESTRUCTION
+  When an object is marked for destruction, the GOING flag is set on it and its @adestroy attribute is triggered (if the 'adestroy' @config option is true). If <object> is a room, all the exits in the room are marked for destruction as well. If <object> is a player, and the @config option destroy_possessions is on, everything he owns is marked for destruction as well. (If really_safe is also on, his SAFE objects are spared.)
+  
+  The MUSH checks for GOING objects every ten minutes or so (see '@config purge_interval'); each one is set with the GOING_TWICE flag, and will be destroyed totally on the next cycle. You can save it from destruction during this period using the @undestroy command, or @destroy it again to destroy it instantly. The GOING and GOING_TWICE flags cannot be set or removed manually.
+  
+  When an object is destroyed, any commands, @waits and semaphores it has queued are drained, and the object's owner has the quota for the object, and the initial cost of creating it, refunded. The OBJECT`DESTROY event is also queued.
+
+  Players can only be @destroyed when they are not connected, and even then can only be destroyed by a Wizard player. If the destroy_possessions @config option is on, anything the player owns is @destroyed. If the really_safe option is also on, his SAFE possessions are spared. Any objects he owns which aren't destroyed are @chown'd to the Probate player (as per '@config probate_judge'), as are any @channels the player owned.
+
+See also: SAFE, EVENTS
 & @undestroy
 & @unrecycle
   @undestroy <object>
   
-  When an object has been marked for destruction using @destroy, this command spares it from destruction. <object>'s @startup is triggered when it is spared.
+  When an object has been marked for destruction using @destroy, this command spares it from destruction, removing the GOING and GOING_TWICE flags. You must control <object>. <object>'s @startup is triggered when it is spared.
+  
+  If <object>'s owner is marked for destruction, they will also be spared.
+  
+  If <object> is a player and the 'destroy_possessions' @config option is on, all objects he owns will also be undestroyed. If <object> is a room, all exits in the room will also be undestroyed. If <object> is an exit and its source room is marked for destruction, it will be undestroyed.
   
   @unrecycle is an alias for @undestroy.
   
@@ -1161,7 +1165,7 @@ See also: enter, leave, goto, ENTER_OK
   Replace a literal '^' with 'v'
   > @edit/regexp me/bar=\^, v
   
-See also: edit(), regedit(), ATTRIBUTES,
+See also: edit(), regedit(), ATTRIBUTES, WILDCARDS
 & @elock
 & @eunlock
   @elock <object>[=<key>]
@@ -1251,6 +1255,23 @@ See also: @link, @search, entrances()
     > @exitformat here=Exits: [itemize(iter(%0, name(%i0)))]
 
 See also: TRANSPARENT, @conformat, @nameformat, @descformat
+& @HTTP
+  @http      <obj>/<attr>=<URL>
+  @http/delete <obj>/<att>=<URL>[,<data>]
+  @http/post <obj>/<att>=<URL>[,<data>]
+  @http/put <obj>/<att>=<URL>[,<data>]
+
+  Attempts to retrieve URL with a HTTP GET request, and upon doing so, queues the action list in <obj>/<attr>. The body of the reply from the remote web server is passed as %0, with the HTTP status in %q<status> and the Content-Type header in %q<content-type>. Any commas in the URL need to be escaped.
+
+  The POST switch makes it do a HTTP POST request instead of the default GET, (And PUT and DELETE do the obvious). With these, the 'content-type' q-register controls the type of data; it defaults to 'application/x-www-form-urlencoded'.` If it contains the string "charset=utf-8", <data> will be converted to UTF-8, otherwise it is assumed to be Latin-1.
+
+  If the q-register 'userpass' is set when running @http, it should hold a string of the form user:password and will be used if needed for HTTP authentication.
+
+  Restricted to objects set Wizard or with the Can_HTTP @Power.
+
+  Note: The response body has the same 8k limit as other MUSH strings. Anything longer is truncated; this command is best used with APIs that provide short responses.
+
+See also: urlencode(), urldecode()
 & @firstexit
   @firstexit <exit1>[, ... , <exitN>]
   
@@ -1285,7 +1306,7 @@ See also: EXITS, @open, @link
   
   See 'help @filter2' for an example.
   
-See also: AUDIBLE, @infilter, attribute flags, LISTENING, @forwardlist, @prefix
+See also: AUDIBLE, @infilter, attribute flags, LISTENING, @forwardlist, @prefix, WILDCARDS
 & @filter2
 
   Example: 
@@ -1881,7 +1902,7 @@ See also: EXITS, @link, @open, LINK_OK, Link_Anywhere Power
     Cyclonus says, "Whee!"
     Recorder records: Whee!
 
-See also: LISTENING, @ahear, @amhear, @aahear
+See also: LISTENING, @ahear, @amhear, @aahear, WILDCARDS
 & LOCKING
 & LOCKS
 & @lock
@@ -1936,11 +1957,11 @@ See also: @logwipe
 
 See also: @log
 & @message
-  @message[/<switches>] <recipients>=<message>,[<obj>/]<attr>[,<arg0>[, ... , <arg29>]]]
+  @message[/<switches>] <recipients>=<defmsg>,[<obj>/]<attr>[,<arg0>[, ... , <arg29>]]]
 
   @message is designed for the use of *format messages, such as @pageformat or @chatformat. It is intended for use with @hooking page, @chat, or say/pose/emit, or for coding language systems.
 
-  For each of the given <recipients>, <obj>/<attr> is evaluated (with up to 30 arguments, as if it was ufun()'d), and the object is shown the result via @pemit. If the attribute does not exist, or you do not have permission to evaluate it, they are shown <message> instead.
+  For each of the given <recipients>, <obj>/<attr> is evaluated (with up to 30 arguments, as if it was ufun()'d), and the object is shown the result via @pemit. If the attribute does not exist, or you do not have permission to evaluate it, they are shown <defmsg> instead.
   
   If <obj> is not given, or is given as "#-2", the attribute will be checked on the recipient.
 
@@ -1948,12 +1969,12 @@ See also: @log
   
   Switches:
     /noeval   -- none of @message's arguments will be evaluated
-    /spoof    -- the message will appear to be from the enactor, not the executor. Requires the Can_Spoof @power.
-    /remit    -- Works like @remit, treating <recipients> as a list of rooms to send <message> to
-    /oemit    -- Works like @oemit, with <recipients> as a list of objects not to emit to. See 'help @oemit' for more info.
+    /spoof    -- the message will appear to be from the enactor, not the executor. Requires the Can_Spoof @power
+    /remit    -- works like @remit, treating <recipients> as a list of rooms to send the message to
+    /oemit    -- works like @oemit, with <recipients> as a list of objects not to emit to. See 'help @oemit' for more info
     /nospoof  -- don't show nospoof info, as per @nspemit/@nsremit/@nsoemit
     /silent   -- don't show a confirmation message
-    /noisy    -- show a confirmation message
+    /noisy    -- show a confirmation message; default depends on the silent_pemit @config option
 
   See 'help @message2' for examples.
 See also: message(), @chatformat, @pageformat, @oemit, @remit, speak()
@@ -2341,7 +2362,7 @@ See also: @inprefix, AUDIBLE, @listen
   @ps[/<switch>] [<player>]
   @ps[/debug] <pid>
   
-  @ps lists all commands currently on your 'to be executed' queue, thus allowing you to identify infinite (or unnecessary) loops with-out putting in says or poses. It gives a count of the total commands in each of the queues (Player, Object, Wait, and Semaphore), displayed in the format:
+  @ps lists all commands currently on your 'to be executed' queue, thus allowing you to identify infinite (or unnecessary) loops with-out putting in says or poses. It gives a count of the total commands in each of the queues (Command, Wait, and Semaphore), displayed in the format:
       <Number of your queued commands> / <Total number of queued commands>.
 
   Some of the queues also include a [Ndel] after the total. That number is the number of entries made by objects that have been halted but haven't been removed from the queue yet.
@@ -2389,9 +2410,15 @@ See also: QUOTAS, Quotas Power, No_Quota Power
 & @readcache
   @readcache
   
-  This wizard-only command reads special text files into a cache and rebuilds the help and news indices. This must be done every time the text files (connect text, help files, etc.) are changed while the game is running. It does not need to be used after changing the names.cnf file of bad player names.
- 
+  This wizard-only command reloads the cached text files (listed under '@config messages') and rebuilds the indexes for help, news and similar commands. 
+
+  On some systems (where '@config compile' shows 'Changed help files will be automatically reindexed.'), updates to these files are noticed and loaded automatically. Otherwise, @readcache must be used any time changes are made to one of these files while the game is running.
+
   A site admin can achieve the same effect by sending the MUSH process a kill -1 or kill -HUP.
+
+  @readcache does not load updates to the configuration files (mush.cnf, restrict.cnf, etc) - the game must be restarted with @shutdown/reboot to reload these.
+
+See also: @shutdown
 & @remit
   @remit[/switches] <object>=<message>
 
@@ -2402,6 +2429,7 @@ See also: QUOTAS, Quotas Power, No_Quota Power
   (Without /silent or /noisy, the silent_pemit config option is used to determine noisiness.)
   The /list switch will send the message to the contents of multiple objects at the same time. The <object> argument is treated as a space-separated list of targets.
   The /spoof switch causes nospoof notifications to show the enactor's dbref instead of the executor's dbref, and requires control over the enactor or the Can_spoof power.
+  The /noeval switch causes <message> to not be evaluated.
 
 See also: @emit, @pemit, @oemit, SPOOFING, NOSPOOF, CONTROL.
 & @retry
@@ -2569,7 +2597,7 @@ See also: GENDER, subj(), poss(), aposs(), obj()
 
   @shutdown/panic performs a panic shutdown of the game, using a seperate database file, not the normal one. It may only be used by God.
 
-  @shutdown/reboot restarts the game without disconnecting the users.
+  @shutdown/reboot restarts the game without disconnecting the users. This is necessary to load changes to the MUSH's configuration files (mush.cnf, restrict.cnf, etc), though not changes to names.cnf, which take effect without a reboot.
 
   If the /paranoid switch is added, the shutdown dump will be a paranoid dump (see @dump).
 & @sitelock
@@ -2592,7 +2620,8 @@ See also: GENDER, subj(), poss(), aposs(), obj()
   
   If the /player switch is given, <host-pattern> is treated as a player name, and sitelock rules are added for that player's LASTIP and LASTSITE, if set.
 
-Continued in 'help @sitelock2'
+  Continued in 'help @sitelock2'.
+See also: WILDCARDS, REGEXPS, ipaddr(), hostname()  
 & @sitelock2
 
   Sitelock allow/deny options:
@@ -2796,7 +2825,7 @@ See also: @scan
   @switch/inplace is an alias for @switch/inline/nobreak/localize.
 
   See 'help @switch3' for examples.
-See also: switch wildcards, switch(), @if, @break, stext(), slev()
+See also: SWITCH WILDCARDS, switch(), @if, @break, stext(), slev()
 & @switch3
   Examples: 
     > &SWITCH_EX thing=$foo *: @switch %0=*a*, :acks, *b*, :bars, :glurps
@@ -2856,9 +2885,23 @@ See also: switch wildcards, switch(), @if, @break, stext(), slev()
 
 See also: JUMP_OK, NO_TEL, Z_TEL, @tport, @lock
 & @trigger
-  @trigger[/spoof][/clearregs] <object>/<attribute>[=<arg0>, ..., <arg29>]
+  @trigger[/<switches>] <object>/<attribute>[=<arg0>, ..., <arg29>]
+  @trigger/match[/<switches>] <object>/<attribute>=<string>
 
   @trigger queues an action list stored in an attribute. It can also pass values to that attribute on the stack, as %0 to %9 and r(0,args) to r(29,args).
+
+  Switches:
+    /spoof: If you control <object>, enactor is preserved.
+    /inline: Run @triggered attribute immediately, rather than queueing it.
+    /clearregs: Clear Q-registers before @triggering.
+
+  If /inline is given, the following switches can be used:
+    /nobreak: If the @triggered attribute has @break or @assert, it won't propagate up.
+    /localize: Don't let the @triggered attribute override your Q-registers.
+
+  /inplace is an alias for /inline/localize/nobreak.
+
+  The /match switch is explained in 'help @trigger2'
   
   You must control <object>, or it must be Link_OK and you must have the same owner, to trigger an attribute on it.
   
@@ -2870,6 +2913,19 @@ See also: JUMP_OK, NO_TEL, Z_TEL, @tport, @lock
   By default, the object using @trigger will be the enactor (%#) for the triggered attribute. However, if you control <object>, the /spoof switch can be used to preserve the current enactor. This is useful for global commands with @a* verb attributes.
   
   Q-registers set at the time @trigger is run will be copied and made available in the triggered attribute, unless the /clearregs switch is given.
+
+  @trigger can execute obj/attrs that are $-commands or ^-listens. e.g:
+
+  > &SLAP object=$slap *=*:@emit %n slaps %0 around with a %1
+  > slap himself=trout
+  Walker slaps himself around with a trout
+  > @trigger object/slap=himself,trout
+  Walker slaps himself around with a trout
+
+  Note that you have to pass %0 and %1 yourself. For some $-commands or listens, the pattern can get complex (especially with regexps!), so /match allows you to pass a command to match the pattern.
+
+  > @trigger/match object/slap=slap himself=trout
+  Walker slaps himself around with a trout
 
   See 'help @trigger3' for examples.
 See also: @include, ufun(), VERBS
@@ -3190,11 +3246,11 @@ See: @enter, @efail, @ealias, leave, @lock, @idescribe, INTERIORS
 & examine
   examine[/<switches>] <object>[/<attribute>] 
   
-  Displays all available information about <object>. <object> may be an object, 'me' or 'here'. You must control the object to examine it. If you do not own the object, or it is not visible, you will just see the name of the object's owner. May be abbreviated 'ex <object>'. If the attribute parameter is given, you will only see that attribute (good for looking at code). You can also wild-card match on attributes. 
+  Displays all available information about <object>. <object> may be an object, 'me' or 'here'. You must control the object to examine it. If you do not own the object, or it is not visible, you will just see the name of the object's owner. May be abbreviated 'ex <object>'. If the attribute parameter is given, you will only see that attribute (good for looking at code). You can also wildcard match on attributes. 
   The * wildcard matches any number of characters except a backtick (`).
   The ? wildcard matches a single character except a backtick (`).
   The ** wildcard matches any number of characters, including backticks.
-  For example. to see all the attributes that began with a 'v' you could do ex <object>/v**
+  For example, to see all the attributes that began with a 'v' you could do ex <object>/v**
   
   The /brief switch is equivalent to the 'brief' command.
   The /debug switch is wizard-only and shows raw values for certain fields in an object. 
@@ -3203,7 +3259,7 @@ See: @enter, @efail, @ealias, leave, @lock, @idescribe, INTERIORS
   The /all switch shows the values of VEILED attributes.
   The /opaque switch omits contents listings.
 
-See also: ATTRIBUTE TREES, brief, lattr()
+See also: ATTRIBUTE TREES, brief, lattr(), WILDCARDS
 & follow
   follow <object>
 
@@ -3565,3 +3621,22 @@ See also: USER-DEFINED COMMANDS, EVALUATION ORDER
   This socket command shows some basic information about the MUSH, along with any admin-defined information specified in mush.cnf with the 'mssp' option. The info is also shown via the MSSP telnet option. Useful for MUD crawlers and bots. For more information about the MUD Server Status Protocol (MSSP), see http://tintin.sourceforge.net/mssp/
   
 See also: INFO
+& @SUGGEST
+@suggest[/list]
+@suggest/add <category>=<word>
+@suggest/delete <category>=<word>
+
+ Given a list of known good words in a category, the mush can suggest ones based on misspelled or otherwise invalid words. This is used for suggesting function names, help entries, etc. @suggest provides a way to add custom categories and vocabulary words.
+
+ When given no switches or /list, shows all available suggestion categories. If the dict_file config option is set, tries to populate the 'words' category from it.
+
+ /add and /delete are Wizard-only switches that do the respective operation for a word in a given category.
+
+Example:
+    > @suggest/add pets=dog
+    > @suggest/add pets=cat
+    > @suggest/add pets=bird
+    > think suggest(pets, birb)
+    BIRD
+
+See also: suggest()

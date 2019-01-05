@@ -50,6 +50,7 @@ extern dbref first_free; /* pointer to free list */
 #define ModTime(x) (db[(x)].modification_time)
 
 #define AttrCount(x) (db[(x)].attrcount)
+#define AttrCap(x) (db[(x)].attrcap)
 
 /* Moved from warnings.c because create.c needs it. */
 #define Warnings(x) (db[(x)].warnings)
@@ -189,6 +190,7 @@ extern dbref first_free; /* pointer to free list */
 #define AF_Mhear(a) ((a)->flags & AF_MHEAR)
 #define AF_Ahear(a) ((a)->flags & AF_AHEAR)
 #define AF_Quiet(a) ((a)->flags & AF_QUIET)
+#define AF_Root(a) ((a)->flags & AF_ROOT)
 
 /* Non-mortal checks */
 #define God(x) ((x) == GOD)
@@ -255,23 +257,24 @@ struct object {
    * For exits, points to source room.
    */
   dbref exits;
-  dbref next;              /**< pointer to next in contents/exits chain */
-  dbref parent;            /**< pointer to parent object */
-  struct lock_list *locks; /**< list of locks set on the object */
-  dbref owner;             /**< who controls this object */
-  dbref zone;              /**< zone master object number */
-  int penn;                /**< number of pennies object contains */
-  warn_type warnings;      /**< bitflags of warning types */
-  time_t creation_time;    /**< Time/date of object creation */
+  dbref next;           /**< pointer to next in contents/exits chain */
+  dbref parent;         /**< pointer to parent object */
+  dbref owner;          /**< who controls this object */
+  dbref zone;           /**< zone master object number */
+  int penn;             /**< number of pennies object contains */
+  warn_type warnings;   /**< bitflags of warning types */
+  time_t creation_time; /**< Time/date of object creation */
   /** Last modifiction time.
    * For players, the number of failed logins.
    * For other objects, the time/date of last modification to its attributes.
    */
   time_t modification_time;
   int attrcount;           /**< Number of attribs on the object */
+  int attrcap;             /**< Size of the attribute array */
   int type;                /**< Object's type */
   object_flag_type flags;  /**< Pointer to flag bit array */
   object_flag_type powers; /**< Pointer to power bit array */
+  struct lock_list *locks; /**< list of locks set on the object */
   ALIST *list;             /**< list of attributes on the object */
 };
 
@@ -291,9 +294,12 @@ struct db_stat_info {
 extern struct object *db;
 extern dbref db_top;
 
-extern void *get_objdata(dbref thing, const char *keybase);
-extern void *set_objdata(dbref thing, const char *keybase, void *data);
-extern void clear_objdata(dbref thing);
+void init_sqlite_db();
+
+void *get_objdata(dbref thing, const char *keybase);
+void *set_objdata(dbref thing, const char *keybase, void *data);
+void delete_objdata(dbref thing, const char *keybase);
+void clear_objdata(dbref thing);
 
 #define DOLIST(var, first)                                                     \
   for ((var) = (first); GoodObject((var)); (var) = Next(var))
@@ -317,10 +323,10 @@ struct mail {
   dbref to;                /**< Recipient dbref */
   dbref from;              /**< Sender's dbref */
   time_t from_ctime;       /**< Sender's creation time */
-  chunk_reference_t msgid; /**< Message text, compressed */
   time_t time;             /**< Message date/time */
   char *subject;           /**< Message subject, compressed */
   mail_flag read;          /**< Bitflags of message status */
+  chunk_reference_t msgid; /**< Message text, compressed */
 };
 
 typedef struct mail MAIL;

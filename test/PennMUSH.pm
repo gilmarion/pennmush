@@ -50,6 +50,8 @@ sub start {
              "compress_program" => "",
              "uncompress_program" => "",
              "compress_suffix" => "",
+	     "mem_check" => "yes",
+	     "dict_file" => "",
              @_);
   copy("../game/alias.cnf", "testgame/alias.cnf");
   copy("../game/names.cnf", "testgame/names.cnf");
@@ -68,19 +70,20 @@ sub start {
     my $line;
     push(@pids, $child);
     $self->{PID} = $child;
-    foreach $j (1..20) {
-      sleep(1);
+    sleep 5;
+    foreach $j (1..10) {
       next unless open my $LOG, "<", "testgame/log/netmush.log";
       while ($line = <$LOG>) {
-        return $port if $line =~ /^Listening on port $port /;
+        return $port if $line =~ /Listening on port $port /;
       }
+      close $LOG;
     } continue {
-      sleep(1);
+      sleep ($self->{VALGRIND} ? 10 : 5);
     }
     die "Could not start game process properly; pid $child!\n";
   } elsif (defined($child)) {
     chdir("testgame");
-    my @execargs = ("./netmush", "--no-session");
+    my @execargs = ("./netmush", "--no-session", "--disable-socket-quota", "--tests");
     if ($self->{VALGRIND}) {
       unshift @execargs, "valgrind", "--tool=memcheck", '--log-file=../valgrind-%p.log',
 	"--leak-check=full", "--track-origins=yes";

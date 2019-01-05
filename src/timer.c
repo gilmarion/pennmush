@@ -49,6 +49,8 @@
 
 bool inactivity_check(void);
 static void migrate_stuff(int amount);
+static struct squeue *sq_register(uint64_t w, sq_func f, void *d,
+                                  const char *ev);
 
 #ifndef WIN32
 void hup_handler(int);
@@ -94,9 +96,10 @@ migrate_stuff(int amount)
   end_obj = start_obj;
   actual = 0;
   do {
-    for (aptr = List(end_obj); aptr; aptr = AL_NEXT(aptr))
+    ATTR_FOR_EACH (end_obj, aptr) {
       if (aptr->data != NULL_CHUNK_REFERENCE)
         actual++;
+    }
     for (lptr = Locks(end_obj); lptr; lptr = L_NEXT(lptr))
       if (L_KEY(lptr) != NULL_CHUNK_REFERENCE)
         actual++;
@@ -127,11 +130,12 @@ migrate_stuff(int amount)
 
   actual = 0;
   do {
-    for (aptr = List(start_obj); aptr; aptr = AL_NEXT(aptr))
+    ATTR_FOR_EACH (start_obj, aptr) {
       if (aptr->data != NULL_CHUNK_REFERENCE) {
         refs[actual] = &(aptr->data);
         actual++;
       }
+    }
     for (lptr = Locks(start_obj); lptr; lptr = L_NEXT(lptr))
       if (L_KEY(lptr) != NULL_CHUNK_REFERENCE) {
         refs[actual] = &(lptr->key);
@@ -246,45 +250,35 @@ migrate_event(void *data __attribute__((__unused__)))
   return false;
 }
 
-static bool
-on_every_second(void *data __attribute__((__unused__)))
-{
-  time(&mudtime);
-  do_second();
-  return false;
-}
-
 void
 init_sys_events(void)
 {
   time(&mudtime);
   sq_register_loop(60, idle_event, NULL, "PLAYER`INACTIVITY");
   if (DBCK_INTERVAL > 0) {
-    sq_register(mudtime + DBCK_INTERVAL, dbck_event, NULL, "DB`DBCK");
+    sq_register_in(DBCK_INTERVAL, dbck_event, NULL, "DB`DBCK");
     options.dbck_counter = mudtime + DBCK_INTERVAL;
   }
   if (PURGE_INTERVAL > 0) {
-    sq_register(mudtime + PURGE_INTERVAL, purge_event, NULL, "DB`PURGE");
+    sq_register_in(PURGE_INTERVAL, purge_event, NULL, "DB`PURGE");
     options.purge_counter = mudtime + PURGE_INTERVAL;
   }
   if (options.warn_interval > 0) {
-    sq_register(mudtime + options.warn_interval, warning_event, NULL,
-                "DB`WCHECK");
+    sq_register_in(options.warn_interval, warning_event, NULL, "DB`WCHECK");
     options.warn_counter = mudtime + options.warn_interval;
   }
   reg_dbsave_warnings();
   if (DUMP_INTERVAL > 0) {
-    sq_register(mudtime + DUMP_INTERVAL, dbsave_event, NULL, NULL);
+    sq_register_in(DUMP_INTERVAL, dbsave_event, NULL, NULL);
     options.dump_counter = mudtime + DUMP_INTERVAL;
   }
   /* The chunk migration normally runs every 1 second. Slow it down a bit
      to see what affect it has on CPU time */
   sq_register_loop(20, migrate_event, NULL, NULL);
-  sq_register_loop(1, on_every_second, NULL, NULL);
 }
 
-sig_atomic_t cpu_time_limit_hit = 0; /** Was the cpu time limit hit? */
-int cpu_limit_warning_sent = 0;      /** Have we issued a cpu limit warning? */
+volatile sig_atomic_t cpu_time_limit_hit = 0; /** Was the cpu time limit hit? */
+int cpu_limit_warning_sent = 0; /** Have we issued a cpu limit warning? */
 
 #ifndef PROFILING
 #if defined(HAVE_SETITIMER)
@@ -300,10 +294,7 @@ signal_cpu_limit(int signo)
 }
 
 #elif defined(WIN32)
-#if _MSC_VER <= 1100 && !defined(UINT_PTR)
-#define UINT_PTR UINT
-#endif
-UINT_PTR timer_id;
+UINT_PTR timer_id = 0;
 VOID CALLBACK
 win32_timer(HWND hwnd __attribute__((__unused__)),
             UINT uMsg __attribute__((__unused__)),
@@ -358,11 +349,12 @@ start_cpu_timer(void)
       timer_set = 0;
   }
 #elif defined(WIN32) /* Windoze way */
-  if (options.queue_entry_cpu_time > 0)
-    timer_id = SetTimer(NULL, 0, (unsigned) options.queue_entry_cpu_time,
-                        (TIMERPROC) win32_timer);
-  else
+  if (options.queue_entry_cpu_time > 0) {
+    timer_set = timer_id =
+      SetTimer(NULL, 0, (UINT) options.queue_entry_cpu_time, win32_timer);
+  } else {
     timer_set = 0;
+  }
 #endif               /* HAVE_SETITIMER / WIN32 */
 #endif               /* PROFILING */
 }
@@ -405,7 +397,7 @@ struct squeue *sq_head = NULL;
  * \return pointer to the newly added squeue
  */
 struct squeue *
-sq_register(time_t w, sq_func f, void *d, const char *ev)
+sq_register(uint64_t w, sq_func f, void *d, const char *ev)
 {
   struct squeue *sq;
 
@@ -415,20 +407,20 @@ sq_register(time_t w, sq_func f, void *d, const char *ev)
   sq->fun = f;
   sq->data = d;
   if (ev)
-    sq->event = mush_strdup(strupper(ev), "squeue.event");
+    sq->event = strupper_a(ev, "squeue.event");
   else
     sq->event = NULL;
   sq->next = NULL;
 
   if (!sq_head)
     sq_head = sq;
-  else if (difftime(w, sq_head->when) <= 0) {
+  else if (sq_head->when > sq->when) {
     sq->next = sq_head;
     sq_head = sq;
   } else {
     struct squeue *c, *prev = NULL;
     for (prev = sq_head, c = sq_head->next; c; prev = c, c = c->next) {
-      if (difftime(w, c->when) <= 0) {
+      if (c->when > sq->when) {
         sq->next = c;
         prev->next = sq;
         return sq;
@@ -467,7 +459,7 @@ sq_cancel(struct squeue *sq)
   }
 }
 
-/** Register a callback function to be executed in N seconds.
+/** Register a callback function to be executed in N miliseconds.
  * \param n the number of seconds to run the callback after.
  * \param f the callback function.
  * \param d data to pass to the callback.
@@ -475,10 +467,9 @@ sq_cancel(struct squeue *sq)
  * \return pointer to the newly added squeue
  */
 struct squeue *
-sq_register_in(int n, sq_func f, void *d, const char *ev)
+sq_register_in_msec(uint64_t n, sq_func f, void *d, const char *ev)
 {
-  time_t now;
-  time(&now);
+  uint64_t now = now_msecs();
   return sq_register(now + n, f, d, ev);
 }
 
@@ -487,7 +478,7 @@ struct sq_loop {
   sq_func fun;       /**< The function to run for the event */
   void *data;        /**< The data for the event */
   const char *event; /**< The name of the event attr to trigger */
-  int secs;          /**< How often to run the event */
+  uint64_t msecs;    /**< How often to run the event in msecs */
 };
 
 static bool
@@ -497,19 +488,19 @@ sq_loop_fun(void *arg)
   bool res;
 
   res = loop->fun(loop->data);
-  sq_register_in(loop->secs, sq_loop_fun, arg, loop->event);
+  sq_register_in_msec(loop->msecs, sq_loop_fun, arg, loop->event);
 
   return res;
 }
 
-/** Register a callback function to run every N seconds.
+/** Register a callback function to run every N miliseconds.
  * \param n the number of seconds to wait between calls.
  * \param f the callback function.
  * \param d data to pass to the callback.
  * \param ev softcode event to trigger at the same time.
  */
 void
-sq_register_loop(int n, sq_func f, void *d, const char *ev)
+sq_register_loop_msec(uint64_t n, sq_func f, void *d, const char *ev)
 {
   struct sq_loop *loop;
 
@@ -517,12 +508,11 @@ sq_register_loop(int n, sq_func f, void *d, const char *ev)
   loop->fun = f;
   loop->data = d;
   if (ev)
-    loop->event = mush_strdup(strupper(ev), "squeue.event");
+    loop->event = strupper_a(ev, "squeue.event");
   else
     loop->event = NULL;
-  loop->secs = n;
-
-  sq_register_in(n, sq_loop_fun, loop, ev);
+  loop->msecs = n;
+  sq_register_in_msec(n, sq_loop_fun, loop, ev);
 }
 
 /** Execute a single pending system queue event.
@@ -531,21 +521,22 @@ sq_register_loop(int n, sq_func f, void *d, const char *ev)
 bool
 sq_run_one(void)
 {
-  time_t now;
-  struct squeue *n;
-
-  time(&now);
+  uint64_t now = now_msecs();
+  struct squeue *torun;
+  bool r;
 
   if (sq_head) {
-    if (difftime(sq_head->when, now) <= 0) {
-      bool r = sq_head->fun(sq_head->data);
-      if (r && sq_head->event)
-        queue_event(SYSEVENT, sq_head->event, "%s", "");
-      n = sq_head->next;
-      if (sq_head->event)
-        mush_free(sq_head->event, "squeue.event");
-      mush_free(sq_head, "squeue.node");
-      sq_head = n;
+    if (sq_head->when <= now) {
+      torun = sq_head;
+      sq_head = torun->next;
+
+      r = torun->fun(torun->data);
+      if (torun->event) {
+        if (r)
+          queue_event(SYSEVENT, torun->event, "%s", "");
+        mush_free(torun->event, "squeue.event");
+      }
+      mush_free(torun, "squeue.node");
       return true;
     }
   }
@@ -568,15 +559,12 @@ sq_run_all(void)
   return any;
 }
 
-int
-sq_secs_till_next(void)
+uint64_t
+sq_msecs_till_next(void)
 {
-  time_t now = time(NULL);
-  for (struct squeue *s = sq_head; s; s = s->next) {
-    if (s->fun == sq_loop_fun &&
-        ((struct sq_loop *) s->data)->fun == on_every_second)
-      continue;
-    return difftime(s->when, now);
+  uint64_t now = now_msecs();
+  if (sq_head) {
+    return sq_head->when - now;
   }
   return 500;
 }

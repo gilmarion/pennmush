@@ -38,6 +38,7 @@
 #include "strtree.h"
 #include "strutil.h"
 #include "version.h"
+#include "tests.h"
 
 PTAB ptab_command;       /**< Prefix table for command names. */
 PTAB ptab_command_perms; /**< Prefix table for command permissions */
@@ -76,8 +77,9 @@ char *parse_chat_alias(dbref player, char *command); /* from extchat.c */
  */
 COMLIST commands[] = {
 
-  {"@COMMAND", "ADD ALIAS CLONE DELETE EQSPLIT LSARGS RSARGS NOEVAL ON OFF "
-               "QUIET ENABLE DISABLE RESTRICT NOPARSE RSNOPARSE",
+  {"@COMMAND",
+   "ADD ALIAS CLONE DELETE EQSPLIT LSARGS RSARGS NOEVAL ON OFF "
+   "QUIET ENABLE DISABLE RESTRICT NOPARSE RSNOPARSE",
    cmd_command, CMD_T_ANY | CMD_T_EQSPLIT, 0, 0},
   {"@@", NULL, cmd_null, CMD_T_ANY | CMD_T_NOPARSE, 0, 0},
   {"@ALLHALT", NULL, cmd_allhalt, CMD_T_ANY, "WIZARD", "HALT"},
@@ -98,10 +100,11 @@ COMLIST commands[] = {
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_RS_NOPARSE, 0, 0},
   {"@CEMIT", "NOEVAL NOISY SILENT SPOOF", cmd_cemit,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
-  {"@CHANNEL", "LIST ADD DELETE RENAME MOGRIFIER NAME PRIVS QUIET DECOMPILE "
-               "DESCRIBE CHOWN WIPE MUTE UNMUTE GAG UNGAG HIDE UNHIDE WHAT "
-               "TITLE BRIEF RECALL BUFFER COMBINE UNCOMBINE ON JOIN OFF LEAVE "
-               "WHO",
+  {"@CHANNEL",
+   "LIST ADD DELETE RENAME MOGRIFIER NAME PRIVS QUIET DECOMPILE "
+   "DESCRIBE CHOWN WIPE MUTE UNMUTE GAG UNGAG HIDE UNHIDE WHAT "
+   "TITLE BRIEF RECALL BUFFER COMBINE UNCOMBINE ON JOIN OFF LEAVE "
+   "WHO",
    cmd_channel, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED | CMD_T_RS_ARGS, 0,
    0},
   {"@CHAT", NULL, cmd_chat, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
@@ -154,7 +157,6 @@ COMLIST commands[] = {
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_NOGAGGED, 0, 0},
   {"@EUNLOCK", NULL, cmd_eunlock, CMD_T_ANY | CMD_T_NOGAGGED | CMD_T_DEPRECATED,
    0, 0},
-
   {"@FIND", NULL, cmd_find,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_NOGAGGED, 0, 0},
   {"@FIRSTEXIT", NULL, cmd_firstexit, CMD_T_ANY | CMD_T_ARGS, 0, 0},
@@ -173,9 +175,13 @@ COMLIST commands[] = {
   {"@HALT", "ALL NOEVAL PID", cmd_halt,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_BRACE, 0, 0},
   {"@HIDE", "NO OFF YES ON", cmd_hide, CMD_T_ANY, 0, 0},
-  {"@HOOK", "LIST AFTER BEFORE EXTEND IGSWITCH IGNORE OVERRIDE INPLACE INLINE "
-            "LOCALIZE CLEARREGS NOBREAK",
+  {"@HOOK",
+   "LIST AFTER BEFORE EXTEND IGSWITCH IGNORE OVERRIDE INPLACE INLINE "
+   "LOCALIZE CLEARREGS NOBREAK",
    cmd_hook, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS, "WIZARD", "hook"},
+  {"@HTTP", "DELETE POST PUT", cmd_fetch,
+   CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_NOGAGGED | CMD_T_NOGUEST,
+   0, 0},
   {"@INCLUDE", "LOCALIZE CLEARREGS NOBREAK", cmd_include,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_NOGAGGED, 0, 0},
   {"@KICK", NULL, cmd_kick, CMD_T_ANY, "WIZARD", 0},
@@ -186,8 +192,9 @@ COMLIST commands[] = {
    0},
   {"@LISTMOTD", NULL, cmd_motd, CMD_T_ANY, 0, 0},
 
-  {"@LIST", "LOWERCASE MOTD LOCKS FLAGS FUNCTIONS POWERS COMMANDS ATTRIBS "
-            "ALLOCATIONS ALL BUILTIN LOCAL",
+  {"@LIST",
+   "LOWERCASE MOTD LOCKS FLAGS FUNCTIONS POWERS COMMANDS ATTRIBS "
+   "ALLOCATIONS ALL BUILTIN LOCAL",
    cmd_list, CMD_T_ANY, 0, 0},
   {"@LOCK", NULL, cmd_lock,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_SWITCHES | CMD_T_NOGAGGED, 0, 0},
@@ -196,17 +203,19 @@ COMLIST commands[] = {
   {"@LOGWIPE", "CHECK CMD CONN ERR TRACE WIZ ROTATE TRIM WIPE", cmd_logwipe,
    CMD_T_ANY | CMD_T_NOGAGGED | CMD_T_GOD, 0, 0},
   {"@LSET", NULL, cmd_lset, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
-  {"@MAIL", "NOEVAL NOSIG STATS CSTATS DSTATS FSTATS DEBUG NUKE FOLDERS "
-            "UNFOLDER LIST READ UNREAD CLEAR UNCLEAR STATUS PURGE FILE TAG "
-            "UNTAG FWD FORWARD SEND SILENT URGENT REVIEW RETRACT",
+  {"@MAIL",
+   "NOEVAL NOSIG STATS CSTATS DSTATS FSTATS DEBUG NUKE FOLDERS "
+   "UNFOLDER LIST READ UNREAD CLEAR UNCLEAR STATUS PURGE FILE TAG "
+   "UNTAG FWD FORWARD SEND SILENT URGENT REVIEW RETRACT",
    cmd_mail, CMD_T_ANY | CMD_T_EQSPLIT, 0, 0},
-  {"@MALIAS", "SET CREATE DESTROY DESCRIBE RENAME STATS CHOWN NUKE ADD REMOVE "
-              "LIST ALL WHO MEMBERS USEFLAG SEEFLAG",
+  {"@MALIAS",
+   "SET CREATE DESTROY DESCRIBE RENAME STATS CHOWN NUKE ADD REMOVE "
+   "LIST ALL WHO MEMBERS USEFLAG SEEFLAG",
    cmd_malias, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
   {"@MAPSQL", "NOTIFY COLNAMES SPOOF", cmd_mapsql, CMD_T_ANY | CMD_T_EQSPLIT, 0,
    0},
   {"@MESSAGE", "NOEVAL SPOOF NOSPOOF REMIT OEMIT SILENT NOISY", cmd_message,
-   CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS, 0, 0},
+   CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_NOGAGGED, 0, 0},
   {"@MONIKER", NULL, cmd_moniker, CMD_T_ANY | CMD_T_EQSPLIT, 0, 0},
   {"@MOTD", "CONNECT LIST WIZARD DOWN FULL CLEAR", cmd_motd,
    CMD_T_ANY | CMD_T_NOGAGGED, 0, 0},
@@ -265,6 +274,8 @@ COMLIST commands[] = {
   {"@REMIT", "LIST NOEVAL NOISY SILENT SPOOF", cmd_remit,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
   {"@REJECTMOTD", "CLEAR", cmd_motd, CMD_T_ANY, "WIZARD", 0},
+  {"@RESPOND", "HEADER TYPE", cmd_respond,
+   CMD_T_ANY | CMD_T_NOGAGGED | CMD_T_EQSPLIT, 0, 0},
   {"@RESTART", "ALL", cmd_restart, CMD_T_ANY | CMD_T_NOGAGGED, 0, 0},
   {"@RETRY", NULL, cmd_retry,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_RS_NOPARSE |
@@ -288,7 +299,7 @@ COMLIST commands[] = {
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS, "WIZARD", 0},
   {"@STATS", "CHUNKS FREESPACE PAGING REGIONS TABLES FLAGS", cmd_stats,
    CMD_T_ANY, 0, 0},
-
+  {"@SUGGEST", "ADD DELETE LIST", cmd_suggest, CMD_T_ANY | CMD_T_EQSPLIT, 0, 0},
   {"@SWEEP", "CONNECTED HERE INVENTORY EXITS", cmd_sweep, CMD_T_ANY, 0, 0},
   {"@SWITCH",
    "NOTIFY FIRST ALL REGEXP INPLACE INLINE LOCALIZE CLEARREGS NOBREAK",
@@ -300,8 +311,9 @@ COMLIST commands[] = {
 
   {"@TELEPORT", "SILENT INSIDE LIST", cmd_teleport,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
-  {"@TRIGGER", "CLEARREGS SPOOF", cmd_trigger,
-   CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_NOGAGGED, 0, 0},
+  {"@TRIGGER", "CLEARREGS SPOOF INLINE NOBREAK LOCALIZE INPLACE MATCH",
+   cmd_trigger, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_RS_ARGS | CMD_T_NOGAGGED, 0,
+   0},
   {"@ULOCK", NULL, cmd_ulock,
    CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED | CMD_T_DEPRECATED, 0, 0},
   {"@UNDESTROY", NULL, cmd_undestroy, CMD_T_ANY | CMD_T_NOGAGGED, 0, 0},
@@ -392,11 +404,11 @@ COMLIST commands[] = {
   {"UNIMPLEMENTED_COMMAND", NULL, cmd_unimplemented,
    CMD_T_ANY | CMD_T_NOPARSE | CMD_T_INTERNAL | CMD_T_NOP, 0, 0},
 
-  {"ADDCOM", NULL, cmd_addcom, CMD_T_ANY | CMD_T_EQSPLIT, 0, 0},
-  {"DELCOM", NULL, cmd_delcom, CMD_T_ANY, 0, 0},
-  {"@CLIST", "FULL", cmd_clist, CMD_T_ANY, 0, 0},
-  {"COMTITLE", NULL, cmd_comtitle, CMD_T_ANY | CMD_T_EQSPLIT, 0, 0},
-  {"COMLIST", NULL, cmd_comlist, CMD_T_ANY, 0, 0},
+  {"ADDCOM", NULL, cmd_addcom, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
+  {"DELCOM", NULL, cmd_delcom, CMD_T_ANY | CMD_T_NOGAGGED, 0, 0},
+  {"@CLIST", "FULL", cmd_clist, CMD_T_ANY | CMD_T_NOGAGGED, 0, 0},
+  {"COMTITLE", NULL, cmd_comtitle, CMD_T_ANY | CMD_T_EQSPLIT | CMD_T_NOGAGGED, 0, 0},
+  {"COMLIST", NULL, cmd_comlist, CMD_T_ANY | CMD_T_NOGAGGED, 0, 0},
 
   {NULL, NULL, NULL, 0, 0, 0}};
 
@@ -436,6 +448,18 @@ strccat(char *buff, char **bp, const char *from)
   if (*buff)
     safe_str(", ", buff, bp);
   safe_str(from, buff, bp);
+}
+
+TEST_GROUP(strccat) {
+  char buff[BUFFER_LEN];
+  char *bp = buff;
+  *bp = '\0';
+  strccat(buff, &bp, "foo");
+  *bp = '\0';
+  TEST("strccat.1", strcmp(buff, "foo") == 0);
+  strccat(buff, &bp, "bar");
+  *bp = '\0';
+  TEST("strccat.2", strcmp(buff, "foo, bar") == 0);
 }
 
 /* Comparison function for bsearch() */
@@ -478,6 +502,11 @@ switch_find(COMMAND_INFO *cmd, const char *sw)
   return 0;
 }
 
+TEST_GROUP(switch_find) {
+  TEST("switch_find.1", switch_find(NULL, "LIST") > 0);
+  TEST("switch_find.2", switch_find(NULL, "NOTASWITCHEVERTHISMEEANSYOU") == 0);
+}
+
 /** Test if a particular switch was given, using name
  * \param sw the switch mask to test
  * \param name the name of the switch to test for.
@@ -490,6 +519,13 @@ SW_BY_NAME(switch_mask sw, const char *name)
     return SW_ISSET(sw, idx);
   else
     return false;
+}
+
+TEST_GROUP(SW_BY_NAME) {
+  // TEST SW_BY_NAME REQUIRES switch_find switchmask
+  switch_mask mask = switchmask("NOEVAL LIST");
+  TEST("SW_BY_NAME.1", SW_BY_NAME(mask, "LIST"));
+  TEST("SW_BY_NAME.2", SW_BY_NAME(mask, "NOTASWITCHEVERTHISMEANSYOU") == false);
 }
 
 /** Allocate and populate a COMMAND_INFO structure.
@@ -657,8 +693,7 @@ command_find(const char *name)
 {
 
   char cmdname[BUFFER_LEN];
-  strcpy(cmdname, name);
-  upcasestr(cmdname);
+  strupper_r(name, cmdname, sizeof cmdname);
   if (hash_find(&htab_reserved_aliases, cmdname))
     return NULL;
   return (COMMAND_INFO *) ptab_find(&ptab_command, cmdname);
@@ -677,8 +712,7 @@ command_find_exact(const char *name)
 {
 
   char cmdname[BUFFER_LEN];
-  strcpy(cmdname, name);
-  upcasestr(cmdname);
+  strupper_r(name, cmdname, sizeof cmdname);
   if (hash_find(&htab_reserved_aliases, cmdname))
     return NULL;
   return (COMMAND_INFO *) ptab_find_exact(&ptab_command, cmdname);
@@ -721,6 +755,14 @@ switchmask(const char *switches)
     }
   }
   return sw;
+}
+
+TEST_GROUP(switchmask) {
+  // TEST switchmask REQUIRES switch_find split_token
+  switch_mask mask = switchmask("NOEVAL LIST");
+  TEST("switchmask.1", mask != NULL);
+  TEST("switchmask.2", mask && SW_ISSET(mask, SWITCH_LIST));
+  TEST("switchmask.3", mask && SW_ISSET(mask, SWITCH_SPOOF) == 0);
 }
 
 /** Add an alias to the table of reserved aliases.
@@ -846,7 +888,7 @@ command_init_postconfig(void)
     sw_data.start - 1; /* Don't count the trailing NULL-name switch */
   dyn_switch_list[sw_data.n].name = NULL;
   st_flush(&switch_names);
-  switch_bytes = ceil((double) num_switches / 8.0);
+  switch_bytes = ceil((double) (num_switches + 1) / 8.0);
 
   /* Then convert the list of switch names in all commands to masks */
   for (c = ptab_firstentry(&ptab_command); c;
@@ -1119,7 +1161,8 @@ command_parse(dbref player, char *string, MQUE *queue_entry)
     noevtoken = 1;
     p = string + 1;
     string = p;
-    memmove(pe_info->cmd_raw, (char *) pe_info->cmd_raw + 1, BUFFER_LEN - 1);
+    memmove(pe_info->cmd_raw, (char *) pe_info->cmd_raw + 1,
+            strlen(pe_info->cmd_raw));
   }
 
   if (*p == '[') {
@@ -1248,7 +1291,7 @@ command_parse(dbref player, char *string, MQUE *queue_entry)
                                     pe_flags | PE_COMMAND_BRACES),
                        PT_SPACE, pe_info);
     *c = '\0';
-    strcpy(commandraw, command);
+    mush_strncpy(commandraw, command, sizeof commandraw);
     upcasestr(command);
 
     /* Catch &XX and @XX attribute pairs. If that's what we've got,
@@ -1327,21 +1370,25 @@ command_parse(dbref player, char *string, MQUE *queue_entry)
   /* Don't parse switches for one-char commands */
   if (parse_switches) {
     while (*c == '/') {
+      char tmp[BUFFER_LEN];
       t = swtch;
       c++;
-      while ((*c) && (*c != ' ') && (*c != '/'))
+      while ((*c) && (*c != ' ') && (*c != '/')) {
         *t++ = *c++;
+      }
       *t = '\0';
-      switchnum = switch_find(cmd, upcasestr(swtch));
+      switchnum = switch_find(cmd, strupper_r(swtch, tmp, sizeof tmp));
       if (!switchnum) {
         if (cmd->type & CMD_T_SWITCHES) {
-          if (*swp)
+          if (*swp) {
             strcat(swp, " ");
+          }
           strcat(swp, swtch);
         } else {
-          if (se == switch_err)
+          if (se == switch_err) {
             safe_format(switch_err, &se, T("%s doesn't know switch %s."),
                         cmd->name, swtch);
+          }
         }
       } else {
         SW_SET(sw, switchnum);
@@ -1449,7 +1496,10 @@ command_parse(dbref player, char *string, MQUE *queue_entry)
     }
   }
   *c2 = '\0';
-  mush_strncpy(queue_entry->pe_info->cmd_evaled, commandraw, BUFFER_LEN);
+  if (queue_entry->pe_info->cmd_evaled) {
+    mush_free(queue_entry->pe_info->cmd_evaled, "string");
+  }
+  queue_entry->pe_info->cmd_evaled = mush_strdup(commandraw, "string");
 
   retval = NULL;
   if (cmd->func == NULL) {
@@ -1513,8 +1563,8 @@ run_command(COMMAND_INFO *cmd, dbref executor, dbref enactor,
 
   /* Create a pe_info for the hooks, which share q-registers */
   pe_info = make_pe_info("pe_info-run_command");
-  strcpy(pe_info->cmd_evaled, cmd_evaled);
-  strcpy(pe_info->cmd_raw, cmd_raw);
+  pe_info->cmd_evaled = mush_strdup(cmd_evaled, "string");
+  pe_info->cmd_raw = mush_strdup(cmd_raw, "string");
 
   /* Set each command arg into a named stack variable, for use in hooks */
   if (ap && *ap)
@@ -1526,11 +1576,11 @@ run_command(COMMAND_INFO *cmd, dbref executor, dbref enactor,
 
   /* ls, before the = */
   if (cmd->type & CMD_T_LS_ARGS) {
-    char argname[10];
+    char argname[20];
     j = 0;
     for (i = 1; i < MAX_ARG; i++) {
       if (lsa[i] && *lsa[i]) {
-        mush_strncpy(argname, tprintf("lsa%d", i), 10);
+        snprintf(argname, sizeof argname, "lsa%d", i);
         pe_regs_set(pe_info->regvals, PE_REGS_ARG | PE_REGS_NOCOPY, argname,
                     lsa[i]);
         j = i;
@@ -1548,11 +1598,11 @@ run_command(COMMAND_INFO *cmd, dbref executor, dbref enactor,
                   "=");
     /* rs, after the = */
     if (cmd->type & CMD_T_RS_ARGS) {
-      char argname[10];
+      char argname[20];
       j = 0;
       for (i = 1; i < MAX_ARG; i++) {
         if (rsa[i] && *rsa[i]) {
-          mush_strncpy(argname, tprintf("rsa%d", i), 10);
+          snprintf(argname, sizeof argname, "rsa%d", i);
           pe_regs_set(pe_info->regvals, PE_REGS_ARG | PE_REGS_NOCOPY, argname,
                       rsa[i]);
           j = i;
@@ -1568,7 +1618,7 @@ run_command(COMMAND_INFO *cmd, dbref executor, dbref enactor,
   if ((cmd->type & CMD_T_NOP) && ap && *ap) {
     /* Done this way because another call to tprintf during
      * run_cmd_hook will blitz the string */
-    mush_strncpy(nop_arg, tprintf("%s %s", cmd->name, ap), BUFFER_LEN);
+    snprintf(nop_arg, sizeof nop_arg, "%s %s", cmd->name, ap);
   } else {
     nop_arg[0] = '\0';
   }
@@ -1813,7 +1863,9 @@ restrict_command(dbref player, COMMAND_INFO *command, const char *xrestriction)
       safe_chr(')', lockstr, &tp);
   }
   if (command->type & CMD_T_GOD) {
-    add_restriction(tprintf("=#%d", GOD), '&');
+    char tmp[20];
+    snprintf(tmp, sizeof tmp, "=#%d", GOD);
+    add_restriction(tmp, '&');
   }
   if (command->type & CMD_T_NOGUEST) {
     add_restriction("!POWER^GUEST", '&');
@@ -1944,10 +1996,11 @@ new_hook(struct hook_data *from)
 
   if (from) {
     newhook->obj = from->obj;
-    if (from->attrname)
+    if (from->attrname) {
       newhook->attrname = mush_strdup(from->attrname, "hook.attr");
-    else
+    } else {
       newhook->attrname = NULL;
+    }
     newhook->inplace = from->inplace;
   } else {
     newhook->obj = NOTHING;
@@ -2567,8 +2620,9 @@ do_hook(dbref player, char *command, char *obj, char *attrname,
       mush_free(*h, "hook");
       *h = NULL;
     }
-  } else if (!obj || !*obj || ((flag != HOOK_OVERRIDE && flag != HOOK_EXTEND) &&
-                               (!attrname || !*attrname))) {
+  } else if (!obj || !*obj ||
+             ((flag != HOOK_OVERRIDE && flag != HOOK_EXTEND) &&
+              (!attrname || !*attrname))) {
     if (flag == HOOK_OVERRIDE || flag == HOOK_EXTEND) {
       notify(player, T("You must give an object."));
     } else {
@@ -2588,7 +2642,7 @@ do_hook(dbref player, char *command, char *obj, char *attrname,
     if (!attrname || !*attrname) {
       (*h)->attrname = NULL;
     } else {
-      (*h)->attrname = mush_strdup(strupper(attrname), "hook.attr");
+      (*h)->attrname = strupper_a(attrname, "hook.attr");
     }
     (*h)->inplace = queue_type;
     notify_format(player, T("Hook set for %s."), cmd->name);

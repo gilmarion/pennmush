@@ -113,6 +113,7 @@ start_log(struct log_stream *log)
 {
   static int ht_initialized = 0;
   FILE *f;
+  char logbuff[BUFFER_LEN];
 
   if (!log->filename || !*log->filename) {
     log->fp = stderr;
@@ -121,7 +122,8 @@ start_log(struct log_stream *log)
       hashinit(&htab_logfiles, 8);
       ht_initialized = 1;
     }
-    if ((f = hashfind(strupper(log->filename), &htab_logfiles))) {
+    if ((f = hashfind(strupper_r(log->filename, logbuff, sizeof logbuff),
+                      &htab_logfiles))) {
       /* We've already opened this file for another log, so just use that
        * pointer */
       log->fp = f;
@@ -132,7 +134,8 @@ start_log(struct log_stream *log)
                 strerror(errno));
         log->fp = stderr;
       } else {
-        hashadd(strupper(log->filename), log->fp, &htab_logfiles);
+        hashadd(strupper_r(log->filename, logbuff, sizeof logbuff), log->fp,
+                &htab_logfiles);
         fputs("START OF LOG.\n", log->fp);
         fflush(log->fp);
       }
@@ -154,23 +157,26 @@ start_all_logs(void)
   for (n = 0; n < NLOGS; n++)
     start_log(logs + n);
 
-  fprintf(stderr, "Redirecting stderr to %s\n", ERRLOG);
+  fprintf(stderr, "Redirecting stdout and stderr to %s\n", ERRLOG);
   fp = fopen(ERRLOG, "a");
   if (!fp) {
     fprintf(stderr, "Unable to open %s. Error output to stderr.\n", ERRLOG);
   } else {
     fclose(fp);
     if (!freopen(ERRLOG, "a", stderr)) {
-      printf(T("Ack!  Failed reopening stderr!"));
+      puts(T("Ack!  Failed reopening stderr!"));
       exit(1);
     }
     setvbuf(stderr, NULL, _IOLBF, BUFSIZ);
+    if (!freopen(ERRLOG, "a", stdout)) {
+      fputs(T("Ack!  Failed reopening stdout!"), stderr);
+      fputc('\n', stderr);
+      exit(1);
+    }
+    setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
   }
 
   if (once) {
-#ifndef DEBUG_BYTECODE
-    fclose(stdout);
-#endif
     fclose(stdin);
     once = 0;
   }
@@ -189,10 +195,12 @@ static void
 end_log(struct log_stream *log, bool keep_buffer)
 {
   FILE *fp;
+  char logbuff[BUFFER_LEN];
 
   if (!log->filename || !*log->filename || !log->fp)
     return;
-  if ((fp = hashfind(strupper(log->filename), &htab_logfiles))) {
+  if ((fp = hashfind(strupper_r(log->filename, logbuff, sizeof logbuff),
+                     &htab_logfiles))) {
     int n;
 
     lock_file(fp);
@@ -207,7 +215,8 @@ end_log(struct log_stream *log, bool keep_buffer)
       free_bufferq(log->buffer);
       log->buffer = NULL;
     }
-    hashdelete(strupper(log->filename), &htab_logfiles);
+    hashdelete(strupper_r(log->filename, logbuff, sizeof logbuff),
+               &htab_logfiles);
   }
 }
 
@@ -403,7 +412,7 @@ do_rawlog(enum log_type logtype, const char *fmt, ...)
 {
   struct log_stream *log;
   struct tm *ttm;
-  char timebuf[18];
+  char timebuf[48];
   char tbuf1[BUFFER_LEN + 50];
   va_list args;
 
@@ -414,7 +423,7 @@ do_rawlog(enum log_type logtype, const char *fmt, ...)
   time(&mudtime);
   ttm = localtime(&mudtime);
 
-  strftime(timebuf, sizeof timebuf, "[%m/%d %H:%M:%S]", ttm);
+  strftime(timebuf, sizeof timebuf, "[%Y-%m-%d %H:%M:%S]", ttm);
 
   log = lookup_log(logtype);
 

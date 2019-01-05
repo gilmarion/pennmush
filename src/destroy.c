@@ -71,6 +71,7 @@
 #include "match.h"
 #include "mushdb.h"
 #include "parse.h"
+#include "mushsql.h"
 
 dbref first_free = NOTHING; /**< Object at top of free list */
 
@@ -468,7 +469,9 @@ pre_destroy(dbref player, dbref thing)
   /* Present informative messages, and do recursive destruction. */
   switch (Typeof(thing)) {
   case TYPE_ROOM:
-    DOLIST(tmp, Exits(thing)) { pre_destroy(player, tmp); }
+    DOLIST (tmp, Exits(thing)) {
+      pre_destroy(player, tmp);
+    }
     break;
   case TYPE_PLAYER:
     if (DESTROY_POSSESSIONS) {
@@ -573,8 +576,7 @@ undestroy(dbref player, dbref thing)
     /* undestroy exits in this room, except exits that are going to be
      * destroyed anyway due to a GOING player.
      */
-    DOLIST(tmp, Exits(thing))
-    {
+    DOLIST (tmp, Exits(thing)) {
       if (DESTROY_POSSESSIONS ? (!Going(Owner(tmp)) || Safe(tmp)) : 1) {
         (void) undestroy(player, tmp);
       }
@@ -586,6 +588,8 @@ undestroy(dbref player, dbref thing)
   }
   return 1;
 }
+
+void delete_all_linked_to(dbref);
 
 /* Does the real work of freeing all the memory and unlinking an object.
  * This is going to have to be very tightly coupled with the implementation;
@@ -621,6 +625,7 @@ free_object(dbref thing)
            thing);
     return;
   }
+
   /* We queue the object-destroy event. Since the event will deal with an
    * object that doesn't exist anymore, we pass it what information we can,
    * but as strings.
@@ -700,7 +705,7 @@ free_object(dbref thing)
 
   /* chomp chomp */
   atr_free_all(thing);
-  List(thing) = NULL;
+
   /* don't eat name otherwise examine will crash */
 
   free_locks(Locks(thing));
@@ -752,7 +757,24 @@ free_object(dbref thing)
   Home(thing) = NOTHING;
   CreTime(thing) = 0; /* Prevents it from matching objids */
 
-  clear_objdata(thing);
+  {
+    sqlite3 *sqldb;
+    sqlite3_stmt *deleter;
+    int status;
+
+    sqldb = get_shared_db();
+    deleter = prepare_statement(sqldb, "DELETE FROM objects WHERE dbref = ?",
+                                "objects.delete");
+    sqlite3_bind_int(deleter, 1, thing);
+    do {
+      status = sqlite3_step(deleter);
+    } while (is_busy_status(status));
+    if (status != SQLITE_DONE) {
+      do_rawlog(LT_ERR, "Unable to delete #%d from objects table: %s", thing,
+                sqlite3_errmsg(sqldb));
+    }
+    sqlite3_reset(deleter);
+  }
 
   Next(thing) = first_free;
   first_free = thing;
@@ -773,7 +795,9 @@ empty_contents(dbref thing)
   first = Contents(thing);
   Contents(thing) = NOTHING;
   /* send all objects to nowhere */
-  DOLIST(rest, first) { Location(rest) = NOTHING; }
+  DOLIST (rest, first) {
+    Location(rest) = NOTHING;
+  }
   /* now send them home */
   while (first != NOTHING) {
     rest = Next(first);
@@ -830,8 +854,6 @@ static void
 clear_player(dbref thing)
 {
   dbref i;
-  ATTR *atemp;
-  char alias[BUFFER_LEN + 1];
   dbref probate;
 
   /* Clear out mail. */
@@ -851,12 +873,6 @@ clear_player(dbref thing)
 
   do_log(LT_WIZ, thing, NOTHING, "Player destroyed.");
 
-  /* Clear out names from the player list */
-  delete_player(thing, NULL);
-  if ((atemp = atr_get_noparent(thing, "ALIAS")) != NULL) {
-    strcpy(alias, atr_value(atemp));
-    delete_player(thing, alias);
-  }
   /* Do all the thing-esque manipulations. */
   clear_thing(thing);
 
@@ -884,7 +900,9 @@ clear_room(dbref thing)
   first = Exits(thing);
   Source(thing) = NOTHING;
   /* set destination of all exits to nothing */
-  DOLIST(rest, first) { Destination(rest) = NOTHING; }
+  DOLIST (rest, first) {
+    Destination(rest) = NOTHING;
+  }
   /* Clear all exits out of exit list */
   while (first != NOTHING) {
     rest = Next(first);
@@ -1031,6 +1049,7 @@ purge(void)
         set_flag_internal(thing, "GOING_TWICE");
       }
     } else {
+      attr_shrink(thing);
       continue;
     }
   }
@@ -1138,8 +1157,9 @@ check_fields(void)
            * Relink to our source
            */
           Destination(thing) = Source(thing);
-          do_rawlog(LT_ERR, "ERROR: Exit %s leading to invalid room #%d "
-                            "relinked to its source room.",
+          do_rawlog(LT_ERR,
+                    "ERROR: Exit %s leading to invalid room #%d "
+                    "relinked to its source room.",
                     unparse_object(GOD, thing, 0), home);
         } else if (GoodObject(loc) && IsGarbage(loc)) {
           /* If our destination is destroyed, then we relink to the
@@ -1149,8 +1169,9 @@ check_fields(void)
            * into nasty limbo exits.
            */
           Destination(thing) = Source(thing);
-          do_rawlog(LT_ERR, "ERROR: Exit %s leading to garbage room #%d "
-                            "relinked to its source room.",
+          do_rawlog(LT_ERR,
+                    "ERROR: Exit %s leading to garbage room #%d "
+                    "relinked to its source room.",
                     unparse_object(GOD, thing, 0), home);
         }
         /* This must come last */
@@ -1178,7 +1199,7 @@ check_fields(void)
        * an invalid dbref, change its ownership to God.
        */
       if (!IsGarbage(thing))
-        atr_iter_get(GOD, thing, "**", 0, 0, attribute_owner_helper, NULL);
+        atr_iter_get(GOD, thing, "**", AIG_NONE, attribute_owner_helper, NULL);
     }
   }
 }

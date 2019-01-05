@@ -19,9 +19,8 @@
 struct attr {
   char const *name;       /**< Name of attribute */
   uint32_t flags;         /**< Attribute flags */
-  chunk_reference_t data; /**< The attribute's value, compressed */
   dbref creator;          /**< The attribute's creator's dbref */
-  ATTR *next;             /**< Pointer to next attribute in list */
+  chunk_reference_t data; /**< The attribute's value, compressed */
 };
 
 /** An alias for an attribute.
@@ -34,7 +33,8 @@ typedef struct atr_alias {
 /* Stuff that's actually in atr_tab.c */
 ATTR *aname_hash_lookup(const char *name);
 int alias_attribute(const char *atr, const char *alias);
-void do_attribute_limit(dbref player, char *name, int type, char *pattern);
+void do_attribute_limit(dbref player, const char *name, int type,
+                        const char *pattern);
 void do_attribute_access(dbref player, char *name, char *perms,
                          int retroactive);
 void do_attribute_delete(dbref player, char *name);
@@ -48,6 +48,9 @@ const char *check_attr_value(dbref player, const char *name, const char *value);
 int cnf_attribute_access(char *attrname, char *opts);
 
 void add_new_attr(char *name, uint32_t flags);
+bool attr_reserve(dbref, int);
+void attr_shrink(dbref);
+
 /* From attrib.c */
 
 /** atr_add(), atr_clr() error codes */
@@ -73,17 +76,27 @@ atr_err atr_clr(dbref thing, char const *atr, dbref player);
 atr_err wipe_atr(dbref thing, char const *atr, dbref player);
 ATTR *atr_get(dbref thing, char const *atr);
 ATTR *atr_get_noparent(dbref thing, char const *atr);
+
+/** Flags for atr_iter_get() and friends. */
+enum {
+  AIG_NONE = 0,     /**< No special flags */
+  AIG_MORTAL = 0x1, /**< Only look at mortal-visible attributes */
+  AIG_REGEX = 0x2,  /**< Use a regular expression instead of glob */
+};
 typedef int (*aig_func)(dbref, dbref, dbref, const char *, ATTR *, void *);
-int atr_iter_get(dbref player, dbref thing, char const *name, int mortal,
-                 int regexp, aig_func func, void *args);
-int atr_iter_get_parent(dbref player, dbref thing, char const *name, int mortal,
-                        int regexp, aig_func func, void *args);
+int atr_iter_get(dbref player, dbref thing, char const *name, unsigned flags,
+                 aig_func func, void *args);
+int atr_iter_get_parent(dbref player, dbref thing, char const *name,
+                        unsigned flags, aig_func func, void *args);
 int atr_pattern_count(dbref player, dbref thing, const char *name, int doparent,
-                      int mortal, int regexp);
+                      unsigned flags);
 ATTR *atr_complete_match(dbref player, char const *atr, dbref privs);
 void atr_free_all(dbref thing);
 void atr_cpy(dbref dest, dbref source);
 char const *convert_atr(int oldatr);
+int atr_single_match_r(ATTR *ptr, int flag_mask, int end, const char *input,
+                       char *args[], char *match_space, int match_space_len,
+                       char cmd_buff[], PE_REGS *pe_regs);
 int atr_comm_match(dbref thing, dbref player, int type, int end,
                    char const *str, int just_match, int check_locks,
                    char *atrname, char **abp, int show_child, dbref *errobj,
@@ -93,7 +106,7 @@ int one_comm_match(dbref thing, dbref player, const char *atr, const char *str,
 int do_set_atr(dbref thing, char const *RESTRICT atr, char const *RESTRICT s,
                dbref player, uint32_t flags);
 void do_atrlock(dbref player, char const *src, char const *action);
-void do_atrchown(dbref player, char const *arg1, char const *arg2);
+int do_atrchown(dbref player, char const *arg1, char const *arg2);
 int string_to_atrflag(dbref player, const char *p, privbits *bits);
 int string_to_atrflagsets(dbref player, const char *p, privbits *setbits,
                           privbits *clrbits);
@@ -169,9 +182,12 @@ extern ATTR attr[]; /**< external predefined attributes. */
 #define AL_STR(alist) (atr_get_compressed_data((alist)))
 /** The raw length of the (possibly compressed) attribute text. */
 #define AL_STRLEN(alist) ((alist)->data ? chunk_len((alist)->data) : 0)
-#define AL_NEXT(alist) ((alist)->next)
 #define AL_CREATOR(alist) ((alist)->creator)
 #define AL_FLAGS(alist) ((alist)->flags)
 #define AL_DEREFS(alist) ((alist)->data ? chunk_derefs((alist)->data) : 0)
+
+#define ATTR_FOR_EACH(obj, var)                                                \
+  if (List(obj))                                                               \
+    for (var = List(obj); AL_NAME(var); var++)
 
 #endif /* __ATTRIB_H */

@@ -47,10 +47,16 @@ bool string_prefix(const char *restrict string, const char *restrict prefix);
 bool string_prefixe(const char *restrict string, const char *restrict prefix);
 const char *string_match(const char *src, const char *sub);
 char *strupper(const char *s);
+char *strupper_a(const char *s, const char *name) __attribute_malloc__;
+char *strupper_r(const char *restrict s, char *restrict d, size_t len);
 char *strlower(const char *s);
-char *strinitial(const char *s);
+char *strlower_a(const char *s, const char *name) __attribute_malloc__;
+char *strlower_r(const char *restrict s, char *restrict d, size_t len);
+char *strinitial(const char *s) __attribute__((__deprecated__));
+char *strinitial_r(const char *restrict s, char *restrict d, size_t len);
 char *upcasestr(char *s);
 char *skip_space(const char *s);
+char *strchr_unescaped(char *s, int c);
 char *seek_char(const char *s, char c);
 char *mush_strndup(const char *src, size_t len,
                    const char *check) __attribute_malloc__;

@@ -92,6 +92,35 @@ struct is_data {
   struct event *ev;
 };
 
+/** Safe version of strncpy() that always nul-terminates the
+ * destination string. The only reason it's not called
+ * safe_strncpy() is to avoid confusion with the unrelated
+ * safe_*() pennstr functions.
+ * \param dst the destination string to copy to
+ * \param src the source string to copy from
+ * \param len the length of dst. At most len-1 bytes will be copied from src
+ * \return dst
+ */
+char *
+mush_strncpy(char *restrict dst, const char *restrict src, size_t len)
+{
+  size_t n = 0;
+  char *start = dst;
+
+  if (!src || !dst || len == 0)
+    return dst;
+
+  len--;
+
+  while (*src && n < len) {
+    *dst++ = *src++;
+    n++;
+  }
+
+  *dst = '\0';
+  return start;
+}
+
 /** Address to hostname lookup wrapper */
 static struct evdns_request *
 evdns_getnameinfo(struct evdns_base *base, const struct sockaddr *addr,
@@ -111,8 +140,9 @@ evdns_getnameinfo(struct evdns_base *base, const struct sockaddr *addr,
                                              callback, data);
   } else {
     lock_file(stderr);
-    fprintf(stderr, "info_slave: Attempt to resolve unknown socket family %d\n",
-            addr->sa_family);
+    fprintf(stderr,
+            "%s info_slave: Attempt to resolve unknown socket family %d\n",
+            time_string(), addr->sa_family);
     unlock_file(stderr);
     return NULL;
   }
@@ -143,7 +173,8 @@ address_resolved(int result, char type, int count,
   if (result != DNS_ERR_NONE || !addresses || type != DNS_PTR || count == 0) {
     strcpy(data->resp.hostname, data->resp.ipaddr);
   } else {
-    strncpy(data->resp.hostname, ((const char **) addresses)[0], HOSTNAME_LEN);
+    mush_strncpy(data->resp.hostname, ((const char **) addresses)[0],
+                 HOSTNAME_LEN);
   }
 
   /* One-shot event to write the response packet */
@@ -170,7 +201,7 @@ got_request(evutil_socket_t fd, short what __attribute__((__unused__)),
   memset(data, 0, sizeof *data);
   data->resp.fd = req.fd;
   hi = ip_convert(&req.remote.addr, req.rlen);
-  strncpy(data->resp.ipaddr, hi->hostname, IPADDR_LEN);
+  mush_strncpy(data->resp.ipaddr, hi->hostname, IPADDR_LEN);
   hi = ip_convert(&req.local.addr, req.llen);
   data->resp.connected_to = strtol(hi->port, NULL, 10);
 
@@ -202,37 +233,77 @@ check_parent_signal(evutil_socket_t fd __attribute__((__unused__)),
 }
 #endif
 
+#ifdef HAVE_KQUEUE
+static void
+check_parent_kqueue(evutil_socket_t fd, short what __attribute__((__unused__)),
+                    void *args __attribute__((__unused__)))
+{
+  struct kevent event;
+  int r;
+  struct timespec timeout = {0, 0};
+
+  r = kevent(fd, NULL, 0, &event, 1, &timeout);
+  if (r == 1 && event.filter == EVFILT_PROC && event.fflags == NOTE_EXIT &&
+      (pid_t) event.ident == parent_pid) {
+    fputerr("Parent mush process exited unexpectedly! Shutting down.");
+    event_base_loopbreak(main_loop);
+  }
+}
+#endif
+
+void
+log_cb(int severity __attribute__((__unused__)), const char *msg)
+{
+  fputerr(msg);
+}
+
 int
 main(void)
 {
   struct event *watch_parent, *watch_request;
   struct timeval parent_timeout = {.tv_sec = 5, .tv_usec = 0};
+  bool parent_watcher = false;
 
   parent_pid = getppid();
 
 #ifdef HAVE_PLEDGE
-  if (pledge("stdio flock inet dns", NULL) < 0) {
-    perror("pledge");
+  if (pledge("stdio proc flock inet dns", NULL) < 0) {
+    penn_perror("pledge");
   }
 #endif
 
   main_loop = event_base_new();
   resolver = evdns_base_new(main_loop, 1);
+  event_set_log_callback(log_cb);
 
-#ifdef HAVE_PRCTL
+#if defined(HAVE_PRCTL)
   if (prctl(PR_SET_PDEATHSIG, SIGUSR1, 0, 0, 0) == 0) {
-    // fputerr("Using prctl() to track parent status.");
     watch_parent = evsignal_new(main_loop, SIGUSR1, check_parent_signal, NULL);
     event_add(watch_parent, NULL);
-  } else {
+    parent_watcher = true;
+  }
+#elif defined(HAVE_KQUEUE)
+  int kfd = kqueue();
+  if (kfd >= 0) {
+    struct kevent event;
+    struct timespec timeout = {0, 0};
+    EV_SET(&event, parent_pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_ONESHOT,
+           NOTE_EXIT, 0, 0);
+    if (kevent(kfd, &event, 1, NULL, 0, &timeout) >= 0) {
+      watch_parent =
+        event_new(main_loop, kfd, EV_READ, check_parent_kqueue, NULL);
+      event_add(watch_parent, NULL);
+      parent_watcher = true;
+    }
+  }
 #endif
+
+  if (!parent_watcher) {
     /* Run every 5 seconds to see if the parent mush process is still around. */
     watch_parent =
       event_new(main_loop, -1, EV_TIMEOUT | EV_PERSIST, check_parent, NULL);
     event_add(watch_parent, &parent_timeout);
-#ifdef HAVE_PRCTL
   }
-#endif
 
   /* Wait for an incoming request datagram from the mush */
   watch_request =
@@ -240,8 +311,8 @@ main(void)
   event_add(watch_request, NULL);
 
   lock_file(stderr);
-  fprintf(stderr, "info_slave: starting event loop using %s.\n",
-          event_base_get_method(main_loop));
+  fprintf(stderr, "%s info_slave: starting event loop using %s.\n",
+          time_string(), event_base_get_method(main_loop));
   unlock_file(stderr);
 
   event_base_dispatch(main_loop);
@@ -274,7 +345,7 @@ enum methods method;
  *  slave processes does them sequentially until some of the subslaves
  *  exit. */
 enum { MAX_SLAVES = 5 };
-sig_atomic_t children = 0;
+volatile sig_atomic_t children = 0;
 pid_t child_pids[MAX_SLAVES];
 pid_t parent_pid = 0;
 
@@ -296,7 +367,7 @@ main(void)
 
 #ifdef HAVE_PLEDGE
   if (pledge("stdio flock dns proc", NULL) < 0) {
-    perror("pledge");
+    penn_perror("pledge");
   }
 #endif
 
@@ -445,10 +516,10 @@ eventwait_init(void)
 #ifdef HAVE_KQUEUE
   kqueue_id = kqueue();
   lock_file(stderr);
-  fputs("info_slave: trying kqueue event loop... ", stderr);
+  fprintf(stderr, "%s info_slave: trying kqueue event loop... ", time_string());
   if (kqueue_id < 0) {
     unlock_file(stderr);
-    penn_perror("error");
+    penn_perror("kqueue");
   } else {
     fputs("ok. Using kqueue!\n", stderr);
     unlock_file(stderr);
@@ -675,7 +746,7 @@ time_string(void)
 
   now = time(NULL);
   ltm = localtime(&now);
-  strftime(buffer, 100, "%m/%d %T", ltm);
+  strftime(buffer, 100, "[%Y-%m-%d %H:%M:%S]", ltm);
 
   return buffer;
 }
@@ -685,7 +756,7 @@ void
 penn_perror(const char *err)
 {
   lock_file(stderr);
-  fprintf(stderr, "[%s] info_slave: %s: %s\n", time_string(), err,
+  fprintf(stderr, "%s info_slave: %s: %s\n", time_string(), err,
           strerror(errno));
   unlock_file(stderr);
 }
@@ -695,6 +766,6 @@ void
 fputerr(const char *msg)
 {
   lock_file(stderr);
-  fprintf(stderr, "[%s] info_slave: %s\n", time_string(), msg);
+  fprintf(stderr, "%s info_slave: %s\n", time_string(), msg);
   unlock_file(stderr);
 }

@@ -131,6 +131,8 @@ PENNCONF conftable[] = {
   {"ancestor_thing", cf_dbref, &options.ancestor_thing, 100000, 0, "db"},
   {"ancestor_player", cf_dbref, &options.ancestor_player, 100000, 0, "db"},
   {"event_handler", cf_dbref, &options.event_handler, 100000, 0, "db"},
+  {"http_handler", cf_dbref, &options.http_handler, 100000, 0, "db"},
+  {"http_per_second", cf_int, &options.http_per_second, 100000, 0, "db"},
   {"mud_name", cf_str, options.mud_name, 128, 0, "net"},
   {"mud_url", cf_str, options.mud_url, 256, 0, "net"},
   {"ip_addr", cf_str, options.ip_addr, 64, 0, "net"},
@@ -224,7 +226,6 @@ PENNCONF conftable[] = {
    "limits"},
   {"queue_loss", cf_int, &options.queue_loss, 10000, 0, "limits"},
   {"queue_chunk", cf_int, &options.queue_chunk, 100000, 0, "limits"},
-  {"active_queue_chunk", cf_int, &options.active_q_chunk, 100000, 0, "limits"},
   {"function_recursion_limit", cf_int, &options.func_nest_lim, 100000, 0,
    "limits"},
   {"function_invocation_limit", cf_int, &options.func_invk_lim, 100000, 0,
@@ -334,6 +335,14 @@ PENNCONF conftable[] = {
    sizeof options.log_size_policy, 0, NULL},
   {"sendmail_prog", cf_str, options.sendmail_prog, sizeof options.sendmail_prog,
    0, NULL},
+  {"help_db", cf_str, options.help_db, sizeof options.help_db, 0, NULL},
+  {"use_connlog", cf_bool, &options.use_connlog, sizeof options.use_connlog, 0,
+   "log"},
+  {"connlog_db", cf_str, options.connlog_db, sizeof options.help_db, 0, NULL},
+  {"dict_file", cf_str, options.dict_file, sizeof options.dict_file, 0,
+   "files"},
+  {"colors_file", cf_str, options.colors_file, sizeof options.colors_file, 0,
+   "files"},
 
   {NULL, NULL, NULL, 0, 0, NULL}};
 
@@ -419,7 +428,7 @@ add_config(const char *name, config_func handler, void *loc, int max,
     return cnf;
   if ((cnf = new_config()) == NULL)
     return NULL;
-  cnf->name = mush_strdup(strupper(name), "config name");
+  cnf->name = strupper_a(name, "config name");
   cnf->handler = handler;
   cnf->loc = loc;
   cnf->max = max;
@@ -698,6 +707,7 @@ CONFIG_FUNC(cf_flag)
 {
   size_t len = strlen(val);
   size_t total = strlen((char *) loc);
+  char temp[BUFFER_LEN];
 
   /* truncate if necessary */
   if (len + total + 1 >= (size_t) maxval) {
@@ -710,7 +720,8 @@ CONFIG_FUNC(cf_flag)
     if (from_cmd == 0)
       do_rawlog(LT_ERR, "CONFIG: option %s value truncated", opt);
   }
-  strncpy(loc, tprintf("%s %s", (char *) loc, val), maxval);
+  snprintf(temp, sizeof temp, "%s %s", (char *) loc, val);
+  mush_strncpy(loc, temp, maxval);
   return 1;
 }
 
@@ -1171,6 +1182,8 @@ conf_default_set(void)
   options.ancestor_thing = -1;
   options.ancestor_player = -1;
   options.event_handler = -1;
+  options.http_handler = -1;
+  options.http_per_second = 3;
   options.connect_fail_limit = 10;
   options.idle_timeout = 0;
   options.unconnected_idle_timeout = 300;
@@ -1191,7 +1204,6 @@ conf_default_set(void)
   options.starting_quota = 20;
   options.player_queue_limit = 100;
   options.queue_chunk = 3;
-  options.active_q_chunk = 0;
   options.func_nest_lim = 50;
   options.func_invk_lim = 2500;
   options.call_lim = 0;
@@ -1335,6 +1347,11 @@ conf_default_set(void)
   options.log_max_size = 100;
   strcpy(options.log_size_policy, "trim");
   strcpy(options.sendmail_prog, "sendmail");
+  strcpy(options.help_db, "data/help.db");
+  options.use_connlog = 1;
+  strcpy(options.connlog_db, "log/connlog.db");
+  strcpy(options.dict_file, "");
+  strcpy(options.colors_file, "txt/colors.json");
 }
 
 #undef set_string_option
@@ -1577,7 +1594,8 @@ do_config_list(dbref player, const char *type, int lc)
       }
       if (!found) {
         /* Try a wildcard search of option names, including local options */
-        char *wild = tprintf("*%s*", type);
+        char wild[BUFFER_LEN + 2];
+        snprintf(wild, sizeof wild, "*%s*", type);
         for (cp = conftable; cp->name; cp++) {
           if (quick_wild(wild, cp->name) &&
               can_view_config_option(player, cp)) {
@@ -1780,18 +1798,13 @@ do_enable(dbref player, const char *param, int state)
 static void
 show_compile_options(dbref player)
 {
-#if (COMPRESSION_TYPE == 0)
-  notify(player, T(" Attributes are not compressed in memory."));
-#endif
-#if (COMPRESSION_TYPE == 1) || (COMPRESSION_TYPE == 2)
-  notify(player, T(" Attributes are Huffman compressed in memory."));
-#endif
-#if (COMPRESSION_TYPE == 3)
-  notify(player, T(" Attributes are word compressed in memory."));
-#endif
-#if (COMPRESSION_TYPE == 4)
-  notify(player, T(" Attributes are 8-bit word compressed in memory."));
-#endif
+  if (strcmp(options.attr_compression, "huffman") == 0) {
+    notify(player, T(" Attributes are Huffman compressed in memory."));
+  } else if (strcmp(options.attr_compression, "word") == 0) {
+    notify(player, T(" Attributes are word compressed in memory."));
+  } else {
+    notify(player, T(" Attributes are not compressed in memory."));
+  }
 
 #ifdef HAVE_SSL
   notify(player, T(" The MUSH was compiled with SSL support."));
@@ -1829,7 +1842,7 @@ show_compile_options(dbref player)
   notify(player, T(" CPU usage limiting is NOT supported."));
 #endif
 
-#ifdef HAVE_INOTIFY
+#ifdef HAVE_INOTIFY_INIT1
   notify(player, T(" Changed help files will be automatically reindexed."));
 #endif
 
@@ -1868,12 +1881,27 @@ show_compile_options(dbref player)
   notify(player, T(" IANA symbolic timezones can be used."));
 #endif
 
-#ifdef PCRE_CONFIG_JIT
   {
-    int jit = 0;
-    pcre_config(PCRE_CONFIG_JIT, &jit);
-    if (jit)
-      notify(player, T(" Internal regular expressions are JIT-compiled."));
+    PCRE2_UCHAR target[50];
+    uint32_t jit = 0;
+
+    pcre2_config(PCRE2_CONFIG_VERSION, target);
+    notify_format(player, T(" Using PCRE %s"), (const char *) target);
+
+    pcre2_config(PCRE2_CONFIG_JIT, &jit);
+    if (jit) {
+      pcre2_config(PCRE2_CONFIG_JITTARGET, target);
+      notify_format(player,
+                    T(" Internal regular expressions are JIT-compiled for %s."),
+                    (const char *) target);
+    }
   }
+
+#ifdef HAVE_ICU
+  notify(player, T(" (Very limited) Unicode support is enabled."));
+#endif
+
+#ifdef HAVE_LIBCURL
+  notify(player, T(" @HTTP is supported."));
 #endif
 }

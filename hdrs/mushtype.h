@@ -9,9 +9,13 @@
 
 #include "copyrite.h"
 #include <openssl/ssl.h>
+#include <signal.h>
+
 #ifdef HAVE_STDINT_H
 #include <stdint.h>
 #endif
+
+#include "cJSON.h"
 
 #define NUMQ 36
 
@@ -19,10 +23,10 @@
 typedef double NVAL;
 
 /* Math function integral type */
-typedef int32_t IVAL;
+typedef int64_t IVAL;
 
 /** Math function unsigned integral type */
-typedef uint32_t UIVAL;
+typedef uint64_t UIVAL;
 
 /** Dbref type */
 typedef int dbref;
@@ -123,132 +127,23 @@ typedef struct _pe_regs_ {
   const char *name;       /**< For debugging */
 } PE_REGS;
 
-/* Initialize the pe_regs strtrees */
-void init_pe_regs_trees();
-void free_pe_regs_trees();
-
-/* Functions used to create new pe_reg stacks */
-void pe_regs_dump(PE_REGS *pe_regs, dbref who);
-PE_REGS *pe_regs_create_real(int pr_flags, const char *name);
-#define pe_regs_create(x, y) pe_regs_create_real(x, "pe_regs-" y)
-void pe_reg_val_free(PE_REG_VAL *val);
-void pe_regs_clear(PE_REGS *pe_regs);
-void pe_regs_clear_type(PE_REGS *pe_regs, int type);
-void pe_regs_free(PE_REGS *pe_regs);
-PE_REGS *pe_regs_localize_real(NEW_PE_INFO *pe_info, uint32_t pr_flags,
-                               const char *name);
-#define pe_regs_localize(p, x, y) pe_regs_localize_real(p, x, "pe_regs-" y)
-void pe_regs_restore(NEW_PE_INFO *pe_info, PE_REGS *pe_regs);
-
-/* Copy a stack of PE_REGS into a new one: For creating new queue entries.
- * This squashes all values in pe_regs to a single PE_REGS. The returned
- * pe_regs type has PE_REGS_QUEUE. */
-void pe_regs_copystack(PE_REGS *new_regs, PE_REGS *pe_regs, int copytypes,
-                       int override);
-
-/* Manipulating PE_REGS directly */
-void pe_regs_set_if(PE_REGS *pe_regs, int type, const char *key,
-                    const char *val, int override);
-#define pe_regs_set(p, t, k, v) pe_regs_set_if(p, t, k, v, 1)
-void pe_regs_set_int_if(PE_REGS *pe_regs, int type, const char *key, int val,
-                        int override);
-#define pe_regs_set_int(p, t, k, v) pe_regs_set_int_if(p, t, k, v, 1)
-const char *pe_regs_get(PE_REGS *pe_regs, int type, const char *key);
-int pe_regs_get_int(PE_REGS *pe_regs, int type, const char *key);
-
-/* Helper functions: Mostly used in process_expression, r(), itext(), etc */
-int pi_regs_has_type(NEW_PE_INFO *pe_info, int type);
-#define PE_HAS_REGTYPE(p, t) pi_regs_has_type(p, t)
-
-/* PE_REGS_Q */
-int pi_regs_valid_key(const char *key);
-#define ValidQregName(x) pi_regs_valid_key(x)
-int pi_regs_setq(NEW_PE_INFO *pe_info, const char *key, const char *val);
-#define PE_Setq(pi, k, v) pi_regs_setq(pi, k, v)
-const char *pi_regs_getq(NEW_PE_INFO *pe_info, const char *key);
-#define PE_Getq(pi, k) pi_regs_getq(pi, k)
-/* Copy all Q registers from src to dst PE_REGS. */
-void pe_regs_qcopy(PE_REGS *dst, PE_REGS *src);
-
-/* PE_REGS_REGEXP */
-struct real_pcre;
-struct _ansi_string;
-void pe_regs_set_rx_context(PE_REGS *regs, int pe_reg_flags,
-                            struct real_pcre *re_code, int *re_offsets,
-                            int re_subpatterns, const char *re_from);
-void pe_regs_set_rx_context_ansi(PE_REGS *regs, int pe_reg_flags,
-                                 struct real_pcre *re_code, int *re_offsets,
-                                 int re_subpatterns,
-                                 struct _ansi_string *re_from);
-const char *pi_regs_get_rx(NEW_PE_INFO *pe_info, const char *key);
-#define PE_Get_re(pi, k) pi_regs_get_rx(pi, k)
-
-void clear_allq(NEW_PE_INFO *pe_info);
-
-/* PE_REGS_SWITCH and PE_REGS_ITER
- *
- * Here is how SWITCH and ITER fetching works.
- *
- * + Only the topmost PE_REGS (the one associated with the pe_info directly)
- *   will ever have more than one switch or iter value.
- * + If a non-top PE_REGS_ITER is encountered, it is considered to have
- *   1 itext/stext
- * + ilev is caculated by counting the number of PE_REGS_ITER up to the top.
- *   Topmost queue entries will have an int "ilev" set with the appropriate
- *   PE_REGS_foo type.
- * + inum is saved as "n%d", itext as "t%d"
- * + Each non-top level saves as "i0" or "n0" for itext and inum,
- *    respectively.
- * + Copystack will rebuild the itext(0)-itext(MAX_ITERS) count, increasing
- *   them as needed.
- * + Switches are just iters without inums, so they're functionally the same.
- *   The only difference from above is the type of the value.
- */
-const char *pi_regs_get_itext(NEW_PE_INFO *pe_info, int type, int lev);
-int pi_regs_get_ilev(NEW_PE_INFO *pe_info, int type);
-int pi_regs_get_inum(NEW_PE_INFO *pe_info, int type, int lev);
-
-/* Get iter info */
-#define PE_Get_Itext(pi, k) pi_regs_get_itext(pi, PE_REGS_ITER, k)
-#define PE_Get_Ilev(pi) pi_regs_get_ilev(pi, PE_REGS_ITER)
-#define PE_Get_Inum(pi, k) pi_regs_get_inum(pi, PE_REGS_ITER, k)
-/* Get switch info */
-#define PE_Get_Stext(pi, k) pi_regs_get_itext(pi, PE_REGS_SWITCH, k)
-#define PE_Get_Slev(pi) pi_regs_get_ilev(pi, PE_REGS_SWITCH)
-
-/* Get env (%0-%9) info */
-
-const char *pe_regs_intname(int num);
-void pe_regs_setenv(PE_REGS *pe_regs, int num, const char *val);
-void pe_regs_setenv_nocopy(PE_REGS *pe_regs, int num, const char *val);
-const char *pi_regs_get_env(NEW_PE_INFO *pe_info, const char *name);
-int pi_regs_get_envc(NEW_PE_INFO *pe_info);
-#define PE_Get_Env(pi, n) pi_regs_get_env(pi, pe_regs_intname(n))
-#define PE_Get_Envc(pi) pi_regs_get_envc(pi)
-
 /** NEW_PE_INFO holds data about string evaluation via process_expression().  */
 struct new_pe_info {
   int fun_invocations; /**< The number of functions invoked (%?) */
   int fun_recursions;  /**< Function recursion depth (%?) */
   int call_depth; /**< Number of times the parser (process_expression()) has
                      recursed */
-
-  Debug_Info *debug_strings; /**< DEBUG information */
-  int nest_depth;            /**< Depth of function nesting, for DEBUG */
-  int debugging; /**< Show debug? 1 = yes, 0 = if DEBUG flag set, -1 = no */
-
-  PE_REGS *regvals; /**< Saved register values. */
-
-  char cmd_raw[BUFFER_LEN + SSE_OFFSET]; /**< Unevaluated cmd executed (%c) */
-  char cmd_evaled[BUFFER_LEN];           /**< Evaluated cmd executed (%u) */
-
-  char attrname[BUFFER_LEN]; /**< The attr currently being evaluated */
-#ifdef DEBUG
-  char name[BUFFER_LEN]; /**< TEMP: Used for memory-leak checking. Remove me
-                            later!!!! */
-#endif
+  int nest_depth; /**< Depth of function nesting, for DEBUG */
+  int debugging;  /**< Show debug? 1 = yes, 0 = if DEBUG flag set, -1 = no */
   int refcount; /**< Number of times this pe_info is being used. > 1 when shared
                    by sub-queues. free() when at 0 */
+  Debug_Info *debug_strings; /**< DEBUG information */
+  PE_REGS *regvals;          /**< Saved register values. */
+
+  char *cmd_raw;    /**< Unevaluated cmd executed (%c) */
+  char *cmd_evaled; /**< Evaluated cmd executed (%u) */
+
+  char *attrname; /**< The attr currently being evaluated */
 };
 
 /** \struct mque
@@ -262,6 +157,10 @@ struct mque {
                      initially (%#) */
   dbref caller;   /**< Dbref of the caller, who called/triggered this attribute
                      (%\@) */
+  dbref semaphore_obj; /**< Object this queue was \@wait'd on as a semaphore */
+
+  char
+    *semaphore_attr; /**< Attribute this queue was \@wait'd on as a semaphore */
 
   NEW_PE_INFO *pe_info; /**< New pe_info struct used for this queue entry */
 
@@ -271,14 +170,12 @@ struct mque {
                     \@foo/inplace, etc */
   MQUE *next;    /**< The next queue entry in the linked list */
 
-  dbref semaphore_obj; /**< Object this queue was \@wait'd on as a semaphore */
   char
-    *semaphore_attr; /**< Attribute this queue was \@wait'd on as a semaphore */
+    *action_list; /**< The action list of commands to run in this queue entry */
   time_t
     wait_until; /**< Time (epoch in seconds) this \@wait'd queue entry runs */
   uint32_t pid; /**< This queue's process id */
-  char
-    *action_list; /**< The action list of commands to run in this queue entry */
+
   int queue_type; /**< The type of queue entry, bitwise QUEUE_* values */
   int port; /**< The port/descriptor the command came from, or 0 for queue entry
                not from a player's client */
@@ -337,9 +234,9 @@ struct text_queue {
 #define CONN_XTERM256 0x400
 #define CONN_RESERVED 0x800
 
-/** An unrecoverable error happened when trying to read or write to the socket.
- * Close when safe. */
-#define CONN_SOCKET_ERROR 0x1000
+/** This connection is marked for closing. Still safe to write to it.
+ * Close when ready. */
+#define CONN_SHUTDOWN 0x1000
 
 /** Negotiated GMCP via Telnet */
 #define CONN_GMCP 0x2000
@@ -347,11 +244,21 @@ struct text_queue {
 /** Sending and receiving UTF-8 */
 #define CONN_UTF8 0x4000
 
-#ifndef WITHOUT_WEBSOCKETS
+/* Socket error, do not write to this connection anymore. */
+#define CONN_NOWRITE 0x8000
+
+/* HTTP connection, pass input straight to process_http_input */
+#define CONN_HTTP_REQUEST 0x10000
+/* An active HTTP command: Pemits and the like should be buffered in
+ * active_http_request */
+#define CONN_HTTP_BUFFER 0x20000
+/* An HTTP Request that should be closed. */
+#define CONN_HTTP_READY 0x40000
+#define CONN_HTTP_CLOSE 0x80000
+
 /* Flag for WebSocket client. */
 #define CONN_WEBSOCKETS_REQUEST 0x10000000
-#define CONN_WEBSOCKETS         0x20000000
-#endif /* undef WITHOUT_WEBSOCKETS */
+#define CONN_WEBSOCKETS 0x20000000
 
 /** Maximum \@doing length */
 #define DOING_LEN 40
@@ -381,9 +288,34 @@ typedef bool (*sq_func)(void *);
 struct squeue {
   sq_func fun;         /** Function to run */
   void *data;          /** Data to pass to function, or NULL */
-  time_t when;         /** When to run the function */
+  uint64_t when;       /** When to run the function, in milliseconds. */
   char *event;         /** Softcode Event name to trigger, or NULL if none */
   struct squeue *next; /** Pointer to next squeue event in linked list */
+};
+
+/**< Have we used too much CPU? */
+extern volatile sig_atomic_t cpu_time_limit_hit;
+
+#define HTTP_METHOD_LEN 16
+#define HTTP_CODE_LEN 64
+
+struct http_request {
+  char method[HTTP_METHOD_LEN]; /**< GET/POST/PUT/DELETE/HEAD/etc */
+  char path[MAX_COMMAND_LEN];   /**< Varies by browser, but 2048 is IE max */
+  char inheaders[BUFFER_LEN];   /**< Incoming Headers */
+  char *inhp;                   /**< bp for hbuff */
+  char inbody[BUFFER_LEN];      /**< Incoming Body */
+  char *inbp;                   /**< bp for buff */
+  uint32_t state;               /**< Current state of request. */
+  int32_t content_length;       /**< Content-Length value. */
+  int32_t content_read;         /**< Content-Length value. */
+
+  char code[HTTP_CODE_LEN];    /**< 200 OK, etc */
+  char ctype[MAX_COMMAND_LEN]; /**< Content-Type: text/plain */
+  char headers[BUFFER_LEN];    /**< Response headers */
+  char *hp;                    /**< ptr for headers */
+  char response[BUFFER_LEN];   /**< Response body. @pemits, etc. */
+  char *rp;                    /**< bp for response */
 };
 
 typedef struct descriptor_data DESC;
@@ -391,6 +323,7 @@ typedef struct descriptor_data DESC;
  * This structure associates a connection's socket (file descriptor)
  * with a lot of other relevant information.
  */
+
 struct descriptor_data {
   int descriptor;            /**< Connection socket (fd) */
   conn_status connected;     /**< Connection status. */
@@ -399,34 +332,34 @@ struct descriptor_data {
   char ip[101];              /**< IP address of connection source */
   dbref player; /**< Dbref of player associated with connection, or NOTHING if
                    not connected */
-  char *output_prefix;          /**< Text to show before output */
-  char *output_suffix;          /**< Text to show after output */
-  int output_size;              /**< Size of output left to send */
-  struct text_queue output;     /**< Output text queue */
-  struct text_queue input;      /**< Input text queue */
-  char *raw_input;              /**< Pointer to start of next raw input */
-  char *raw_input_at;           /**< Pointer to position in raw input */
-  time_t connected_at;          /**< Time of connection */
-  time_t last_time;             /**< Time of last activity */
-  int quota;                    /**< Quota of commands allowed */
-  int cmds;                     /**< Number of commands sent */
-  int hide;                     /**< Hide status */
+  int output_size;          /**< Size of output left to send */
+  char *output_prefix;      /**< Text to show before output */
+  char *output_suffix;      /**< Text to show after output */
+  struct text_queue output; /**< Output text queue */
+  struct text_queue input;  /**< Input text queue */
+  char *raw_input;          /**< Pointer to start of next raw input */
+  char *raw_input_at;       /**< Pointer to position in raw input */
+  time_t connected_at;      /**< Time of connection */
+  time_t last_time;         /**< Time of last activity */
+  uint32_t quota; /**< Quota of commands allowed, *1000 (for milliseconds) */
+  int cmds;       /**< Number of commands sent */
+  int hide;       /**< Hide status */
+  uint32_t conn_flags; /**< Flags of connection (telnet status, etc.) */
   struct descriptor_data *next; /**< Next descriptor in linked list */
-  struct descriptor_data *prev; /**< Previous descriptor in linked list */
-  uint32_t conn_flags;             /**< Flags of connection (telnet status, etc.) */
-  unsigned long input_chars;  /**< Characters received */
-  unsigned long output_chars; /**< Characters sent */
-  int width;                  /**< Screen width */
-  int height;                 /**< Screen height */
-  char *ttype;                /**< Terminal type */
-  SSL *ssl;                   /**< SSL object */
-  int ssl_state;              /**< Keep track of state of SSL object */
-  conn_source source;         /**< Where the connection came from. */
+  unsigned long input_chars;    /**< Characters received */
+  unsigned long output_chars;   /**< Characters sent */
+  int width;                    /**< Screen width */
+  int height;                   /**< Screen height */
+  char *ttype;                  /**< Terminal type */
+  SSL *ssl;                     /**< SSL object */
+  int ssl_state;                /**< Keep track of state of SSL object */
+  conn_source source;           /**< Where the connection came from. */
   char checksum[PUEBLO_CHECKSUM_LEN + 1]; /**< Pueblo checksum */
-#ifndef WITHOUT_WEBSOCKETS
-  /* TODO: Need to add this state to reboot.db. */
   uint64_t ws_frame_len;
-#endif /* undef WITHOUT_WEBSOCKETS */
+  int64_t connlog_id;       /**< ID for this connection's connlog entry */
+  const char *close_reason; /**< Why is this socket being closed? */
+  dbref closer;             /**< Who closed this socket? */
+  struct http_request *http_request;
 };
 
 enum json_type {
@@ -439,23 +372,16 @@ enum json_type {
   JSON_OBJECT
 };
 
-typedef struct json_data JSON;
-struct json_data {
-  enum json_type type; /* The type of JSON data represented by 'data' */
-  void *data; /* A pointer to a char *, int * or json_data struct, depending on
-                 the value of 'type' */
-  struct json_data *next; /* Pointer to the next json_data in the linked list,
-                             for arrays/objects */
-};
+typedef int (*gmcp_handler_func)(char *package, cJSON *data, char *msg,
+                                 DESC *d);
 
-typedef int (*gmcp_handler_func)(char *package, JSON *data, char *msg, DESC *d);
 #define GMCP_HANDLER(x)                                                        \
   int x(char *package __attribute__((__unused__)),                             \
-        JSON *json __attribute__((__unused__)),                                \
+        cJSON *json __attribute__((__unused__)),                               \
         char *msg __attribute__((__unused__)),                                 \
         DESC *d __attribute__((__unused__)));                                  \
   int x(char *package __attribute__((__unused__)),                             \
-        JSON *json __attribute__((__unused__)),                                \
+        cJSON *json __attribute__((__unused__)),                               \
         char *msg __attribute__((__unused__)),                                 \
         DESC *d __attribute__((__unused__)))
 

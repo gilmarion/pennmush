@@ -18,8 +18,9 @@
 #include "parse.h"
 #include "confmagic.h"
 #include "strutil.h"
-
-#ifndef WITHOUT_WEBSOCKETS
+#include "notify.h"
+#include "mymalloc.h"
+#include "connlog.h"
 #include "websock.h"
 
 /* Length of 16 bytes, Base64 encoded (with padding). */
@@ -32,9 +33,9 @@
 #define WEBSOCKET_ACCEPT_LEN 28
 
 /* Escaped characters. */
-#define WEBSOCKET_ESCAPE_IAC ((char)255) /* introduces escape sequence */
-#define WEBSOCKET_ESCAPE_NUL 'n' /* \0 not allowed within a string */
-#define WEBSOCKET_ESCAPE_END 't' /* TAG_END not allowed within a tag */
+#define WEBSOCKET_ESCAPE_IAC ((char) 255) /* introduces escape sequence */
+#define WEBSOCKET_ESCAPE_NUL 'n'          /* \0 not allowed within a string */
+#define WEBSOCKET_ESCAPE_END 't'          /* TAG_END not allowed within a tag */
 
 /* WebSocket opcodes. */
 enum WebSocketOp {
@@ -48,22 +49,16 @@ enum WebSocketOp {
   /* 0xB - 0xF reserved for control frames */
 };
 
-int queue_newwrite(DESC *d, const unsigned char *b, int n);
-
 /* Base64 encoder. PennMUSH's version uses the heavyweight OpenSSL API. */
 static void
 encode64(char *dst, const char *src, size_t srclen)
 {
   static const char enc[] = {
-    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H',
-    'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P',
-    'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
-    'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
-    'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n',
-    'o', 'p', 'q', 'r', 's', 't', 'u', 'v',
-    'w', 'x', 'y', 'z', '0', '1', '2', '3',
-    '4', '5', '6', '7', '8', '9', '+', '/'
-  };
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/'};
 
   // Encode 3-byte units. Manually unrolled for performance.
   while (3 <= srclen) {
@@ -108,7 +103,7 @@ compute_websocket_accept(char *dst, const char *key)
   memcpy(combined + WEBSOCKET_KEY_LEN, MAGIC, WEBSOCKET_KEY_MAGIC_LEN);
 
   /** Compute SHA-1 hash of combined value. */
-  SHA1((unsigned char *)combined, sizeof(combined), (unsigned char *)hash);
+  SHA1((unsigned char *) combined, sizeof(combined), (unsigned char *) hash);
 
   /* Encode using Base64. dst must have at least 28 bytes of space. */
   encode64(dst, hash, sizeof(hash));
@@ -117,11 +112,9 @@ compute_websocket_accept(char *dst, const char *key)
 static void
 abort_handshake(DESC *d)
 {
-  static const char *const RESPONSE =
-    "HTTP/1.1 426 Upgrade Required\r\n"
-    "Sec-WebSocket-Version: 13\r\n"
-    "\r\n"
-  ;
+  static const char *const RESPONSE = "HTTP/1.1 426 Upgrade Required\r\n"
+                                      "Sec-WebSocket-Version: 13\r\n"
+                                      "\r\n";
 
   static size_t RESPONSE_LEN = 0;
 
@@ -129,18 +122,16 @@ abort_handshake(DESC *d)
     RESPONSE_LEN = strlen(RESPONSE);
   }
 
-  queue_newwrite(d, (unsigned char *)RESPONSE, RESPONSE_LEN);
+  queue_newwrite(d, RESPONSE, RESPONSE_LEN);
 }
 
 static void
 complete_handshake(DESC *d)
 {
-  static const char *const RESPONSE =
-    "HTTP/1.1 101 Switching Protocols\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    "Sec-WebSocket-Accept: "
-  ;
+  static const char *const RESPONSE = "HTTP/1.1 101 Switching Protocols\r\n"
+                                      "Upgrade: websocket\r\n"
+                                      "Connection: Upgrade\r\n"
+                                      "Sec-WebSocket-Accept: ";
 
   static size_t RESPONSE_LEN = 0;
 
@@ -160,7 +151,7 @@ complete_handshake(DESC *d)
   memcpy(bp, "\r\n\r\n", 4);
   bp += 4;
 
-  queue_newwrite(d, (unsigned char *)buf, bp - buf);
+  queue_newwrite(d, buf, bp - buf);
 
   /*
    * Switch on WebSockets frame processing.
@@ -174,9 +165,12 @@ complete_handshake(DESC *d)
    * response back from the server before switching, so we're probably OK.
    */
   d->conn_flags &= ~CONN_WEBSOCKETS_REQUEST;
+  d->conn_flags &= ~CONN_PROMPT_NEWLINES;
   d->conn_flags |= CONN_WEBSOCKETS | CONN_UTF8;
 
   d->checksum[0] = 4;
+
+  connlog_set_websocket(d->connlog_id);
 
   do_rawlog(LT_CONN, "[%d/%s/%s] Switching to Websocket mode.", d->descriptor,
             d->addr, d->ip);
@@ -341,7 +335,7 @@ process_websocket_frame(DESC *d, char *tbuf1, int got)
       if (len) {
         /* Begin payload. */
         state = 0;
-     } else {
+      } else {
         /* Empty payload. */
         state = 4;
 
@@ -397,11 +391,8 @@ process_websocket_frame(DESC *d, char *tbuf1, int got)
 }
 
 static char *
-write_message(
-	char *dst, char *const dstend,
-	const char *src, const char *const srcend,
-	char channel
-)
+write_message(char *dst, char *const dstend, const char *src,
+              const char *const srcend, char channel)
 {
   size_t dstlen = dstend - dst;
   size_t srclen = srcend - src;
@@ -552,10 +543,8 @@ to_websocket_frame(const char **bp, int *np, char channel)
 }
 
 int
-markup_websocket(
-  char *buff, char **bp, char *data, int datalen, char *alt, int altlen,
-  char channel
-)
+markup_websocket(char *buff, char **bp, char *data, int datalen, char *alt,
+                 int altlen, char channel)
 {
   char *saved = *bp;
 
@@ -592,11 +581,73 @@ markup_websocket(
   return 0;
 }
 
+void
+send_websocket_object(DESC *d, const char *header, cJSON *data)
+{
+  char buff[BUFFER_LEN];
+  char *bp = buff;
+  int error = 0;
+  int must_free_ptr = 0;
+  cJSON *hdr = NULL;
+  cJSON *ptr;
+
+  if (!d || !(d->conn_flags & CONN_WEBSOCKETS) || !data) {
+    return;
+  }
+
+  if (cJSON_IsObject(data)) {
+    ptr = data;
+  } else {
+    ptr = cJSON_CreateObject();
+
+    if (!ptr) {
+      return;
+    }
+    must_free_ptr = 1;
+
+    /* if json is valid, but not an object, we need to add it to the tmp object
+     */
+    if (!cJSON_IsInvalid(data) && !cJSON_IsNull(data)) {
+
+      /* default to using header as the label, or "data" otherwise */
+      if (header && *header) {
+        cJSON_AddItemReferenceToObject(ptr, header, data);
+      } else {
+        cJSON_AddItemReferenceToObject(ptr, "data", data);
+      }
+    }
+  }
+
+  /* if header is present, add it using the "gmcp" label */
+  if (header && *header) {
+    hdr = cJSON_CreateString(header);
+    cJSON_AddItemToObject(ptr, "gmcp", hdr);
+  }
+
+  char *str = cJSON_PrintUnformatted(ptr);
+
+  /* check to see if we need to delete the tmp object */
+  if (must_free_ptr) {
+    cJSON_Delete(ptr);
+  }
+
+  error = markup_websocket(buff, &bp, str, strlen(str), NULL, 0,
+                           WEBSOCKET_CHANNEL_JSON);
+  *bp = '\0';
+  if (str) {
+    free(str);
+  }
+
+  if (!error) {
+    queue_newwrite(d, buff, strlen(buff));
+    process_output(d);
+    return;
+  }
+}
+
 static void
-do_fun_markup_websocket(
-  char *buff, char **bp, int nargs, char *args[], int arglens[],
-  dbref executor, char channel
-)
+do_fun_markup_websocket(char *buff, char **bp, int nargs, char *args[],
+                        int arglens[], dbref executor, char channel)
 {
   char *arg1;
   int arglen1;
@@ -625,16 +676,12 @@ do_fun_markup_websocket(
 
 FUNCTION(fun_websocket_json)
 {
-  do_fun_markup_websocket(
-    buff, bp, nargs, args, arglens, executor, WEBSOCKET_CHANNEL_JSON
-  );
+  do_fun_markup_websocket(buff, bp, nargs, args, arglens, executor,
+                          WEBSOCKET_CHANNEL_JSON);
 }
 
 FUNCTION(fun_websocket_html)
 {
-  do_fun_markup_websocket(
-    buff, bp, nargs, args, arglens, executor, WEBSOCKET_CHANNEL_HTML
-  );
+  do_fun_markup_websocket(buff, bp, nargs, args, arglens, executor,
+                          WEBSOCKET_CHANNEL_HTML);
 }
-
-#endif /* undef WITHOUT_WEBSOCKETS */

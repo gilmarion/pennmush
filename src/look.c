@@ -79,7 +79,6 @@ look_exits(dbref player, dbref loc, const char *exit_name, NEW_PE_INFO *pe_info)
   char *s1, *s2;
   char *p;
   int exit_count, this_exit, total_count;
-  int texits;
   ufun_attrib ufun;
   PUEBLOBUFF;
 
@@ -94,7 +93,7 @@ look_exits(dbref player, dbref loc, const char *exit_name, NEW_PE_INFO *pe_info)
     mush_panic("Unable to allocate memory in look_exits");
   s1 = tbuf1;
   s2 = tbuf2;
-  texits = exit_count = total_count = 0;
+  exit_count = total_count = 0;
   this_exit = 1;
 
   if (fetch_ufun_attrib("EXITFORMAT", loc, &ufun,
@@ -108,8 +107,7 @@ look_exits(dbref player, dbref loc, const char *exit_name, NEW_PE_INFO *pe_info)
       mush_panic("Unable to allocate memory in look_exits");
 
     bp = arg;
-    DOLIST(thing, Exits(loc))
-    {
+    DOLIST (thing, Exits(loc)) {
       if (((Light(loc) || Light(thing)) || !(Dark(loc) || Dark(thing))) &&
           can_interact(thing, player, INTERACT_SEE, pe_info)) {
         if (bp != arg)
@@ -163,29 +161,26 @@ look_exits(dbref player, dbref loc, const char *exit_name, NEW_PE_INFO *pe_info)
     mush_free(nbuf, "string");
     return;
   }
-  
+
   PUSE;
-  tag_wrap("FONT", "SIZE=+1", exit_name);
+  safe_str(exit_name, pbuff, &pp);
   PEND;
   notify_by(loc, player, pbuff);
 
   for (thing = Exits(loc); thing != NOTHING; thing = Next(thing)) {
     if ((Light(loc) || Light(thing) || (!DarkLegal(thing) && !Dark(loc))) &&
         can_interact(thing, player, INTERACT_SEE, pe_info)) {
+      char tmp[50];
       strcpy(pbuff, AaName(thing, AN_LOOK, NULL));
-      if ((p = strchr(pbuff, ';')))
+      if ((p = strchr(pbuff, ';'))) {
         *p = '\0';
+      }
       p = nbuf;
-      safe_tag_wrap("A", tprintf("XCH_CMD=\"goto #%d\"", thing), pbuff, nbuf,
-                    &p, NOTHING);
+      snprintf(tmp, sizeof tmp, "XCH_CMD=\"goto #%d\"", thing);
+      safe_tag_wrap("A", tmp, pbuff, nbuf, &p, NOTHING);
       *p = '\0';
       if (Transparented(loc) && !(Opaque(thing))) {
-        if (SUPPORT_HTML && !texits) {
-          texits = 1;
-          notify_noenter_by(loc, player, open_tag("UL"));
-        }
         s1 = tbuf1;
-        safe_tag("LI", tbuf1, &s1);
         safe_chr(' ', tbuf1, &s1);
         if (Destination(thing) == NOTHING)
           safe_format(tbuf1, &s1, T("%s leads nowhere."), nbuf);
@@ -199,7 +194,6 @@ look_exits(dbref player, dbref loc, const char *exit_name, NEW_PE_INFO *pe_info)
           safe_format(tbuf1, &s1, T("%s leads to %s."), nbuf,
                       AName(Destination(thing), AN_LOOK, NULL));
         }
-        safe_tag_cancel("LI", tbuf1, &s1);
         *s1 = '\0';
         notify_nopenter_by(loc, player, tbuf1);
       } else {
@@ -214,12 +208,6 @@ look_exits(dbref player, dbref loc, const char *exit_name, NEW_PE_INFO *pe_info)
         }
       }
     }
-  }
-  if (SUPPORT_HTML && texits) {
-    PUSE;
-    tag_cancel("UL");
-    PEND;
-    notify_noenter_by(loc, player, pbuff);
   }
   *s2 = '\0';
   notify_by(loc, player, tbuf2);
@@ -263,8 +251,7 @@ look_contents(dbref player, dbref loc, const char *contents_name,
       mush_panic("Unable to allocate memory in look_contents");
     bp = arg;
     bp2 = arg2;
-    DOLIST(thing, Contents(loc))
-    {
+    DOLIST (thing, Contents(loc)) {
       if (can_see(player, thing, can_see_loc)) {
         if (bp != arg)
           safe_chr(' ', arg, &bp);
@@ -290,31 +277,21 @@ look_contents(dbref player, dbref loc, const char *contents_name,
     return;
   }
   /* check to see if there is anything there */
-  DOLIST(thing, Contents(loc))
-  {
+  DOLIST (thing, Contents(loc)) {
     if (can_see(player, thing, can_see_loc)) {
       /* something exists!  show him everything */
       PUSE;
-      tag_wrap("FONT", "SIZE=+1", contents_name);
-      tag("UL");
+      safe_str(contents_name, pbuff, &pp);
       PEND;
       notify_nopenter_by(loc, player, pbuff);
-      DOLIST(thing, Contents(loc))
-      {
+      DOLIST (thing, Contents(loc)) {
         if (can_see(player, thing, can_see_loc)) {
           PUSE;
-          tag("LI");
-          tag_wrap("A", tprintf("XCH_CMD=\"look #%d\"", thing),
-                   unparse_object_myopic(player, thing, AN_LOOK));
-          tag_cancel("LI");
+          safe_str(unparse_object_myopic(player, thing, AN_LOOK), pbuff, &pp);
           PEND;
           notify_nopenter_by(loc, player, pbuff);
         }
       }
-      PUSE;
-      tag_cancel("UL");
-      PEND;
-      notify_noenter_by(loc, player, pbuff);
       break; /* we're done */
     }
   }
@@ -395,28 +372,36 @@ static void
 examine_atrs(dbref player, dbref thing, const char *mstr, int all, int mortal,
              int parent)
 {
+  unsigned flags = AIG_NONE;
+  if (mortal) {
+    flags |= AIG_MORTAL;
+  }
   if (all || (mstr && *mstr && !wildcard((char *) mstr))) {
     if (parent) {
-      if (!atr_iter_get_parent(player, thing, mstr, mortal, 0, examine_helper,
+      if (!atr_iter_get_parent(player, thing, mstr, flags, examine_helper,
                                NULL) &&
-          mstr)
+          mstr) {
         notify(player, T("No matching attributes."));
+      }
     } else {
-      if (!atr_iter_get(player, thing, mstr, mortal, 0, examine_helper, NULL) &&
-          mstr)
+      if (!atr_iter_get(player, thing, mstr, flags, examine_helper, NULL) &&
+          mstr) {
         notify(player, T("No matching attributes."));
+      }
     }
   } else {
     if (parent) {
-      if (!atr_iter_get_parent(player, thing, mstr, mortal, 0,
+      if (!atr_iter_get_parent(player, thing, mstr, flags,
                                examine_helper_veiled, NULL) &&
-          mstr)
+          mstr) {
         notify(player, T("No matching attributes."));
+      }
     } else {
-      if (!atr_iter_get(player, thing, mstr, mortal, 0, examine_helper_veiled,
+      if (!atr_iter_get(player, thing, mstr, flags, examine_helper_veiled,
                         NULL) &&
-          mstr)
+          mstr) {
         notify(player, T("No matching attributes."));
+      }
     }
   }
 }
@@ -435,7 +420,7 @@ look_simple(dbref player, dbref thing, int key, NEW_PE_INFO *pe_info)
   PUEBLOBUFF;
 
   PUSE;
-  tag_wrap("FONT", "SIZE=+2", unparse_object_myopic(player, thing, AN_LOOK));
+  safe_str(unparse_object_myopic(player, thing, AN_LOOK), pbuff, &pp);
   PEND;
   notify_by(thing, player, pbuff);
   look_description(player, thing, T("You see nothing special."), "DESCRIBE",
@@ -478,8 +463,8 @@ look_room(dbref player, dbref loc, int key, NEW_PE_INFO *pe_info)
   if (!pe_info) {
     made_pe_info = 1;
     pe_info = make_pe_info("look_room");
-    strcpy(pe_info->cmd_raw, "LOOK");
-    strcpy(pe_info->cmd_evaled, "LOOK");
+    pe_info->cmd_raw = mush_strdup("LOOK", "string");
+    pe_info->cmd_evaled = mush_strdup("LOOK", "string");
   }
   /* don't give the unparse if looking through Transparent exit */
   if (!look_through_exit) {
@@ -489,14 +474,17 @@ look_room(dbref player, dbref loc, int key, NEW_PE_INFO *pe_info)
       if (key & LOOK_AUTO) {
         a = atr_get(loc, "VRML_URL");
         if (a) {
-          tag(tprintf("IMG XCH_GRAPH=LOAD HREF=\"%s\"", atr_value(a)));
+          char tmp[BUFFER_LEN + 30];
+          snprintf(tmp, sizeof tmp, "IMG XCH_GRAPH=LOAD HREF=\"%s\"",
+                   atr_value(a));
+          tag(tmp);
         } else {
           tag("IMG XCH_GRAPH=HIDE");
         }
       }
       tag("HR");
     }
-    tag_wrap("FONT", "SIZE=+2", unparse_room(player, loc, pe_info));
+    safe_str(unparse_room(player, loc, pe_info), pbuff, &pp);
     PEND;
     notify_by(loc, player, pbuff);
   }
@@ -835,7 +823,7 @@ do_examine(dbref player, const char *xname, enum exam_type flag, int all,
   }
   if (ok) {
     PUSE;
-    tag_wrap("FONT", "SIZE=+2", object_header(player, thing));
+    safe_str(object_header(player, thing), pbuff, &pp);
     PEND;
     notify(player, pbuff);
     if (FLAGS_ON_EXAMINE)
@@ -894,8 +882,7 @@ do_examine(dbref player, const char *xname, enum exam_type flag, int all,
   /* show contents */
   if (!opaque && (Contents(thing) != NOTHING) &&
       (ok || (!IsRoom(thing) && !Opaque(thing)))) {
-    DOLIST_VISIBLE(content, Contents(thing), (ok) ? GOD : player)
-    {
+    DOLIST_VISIBLE (content, Contents(thing), (ok) ? GOD : player) {
       if (!listed) {
         listed = 1;
         if (IsPlayer(thing))
@@ -926,8 +913,8 @@ do_examine(dbref player, const char *xname, enum exam_type flag, int all,
     /* tell him about exits */
     if (Exits(thing) != NOTHING) {
       notify(player, T("Exits:"));
-      DOLIST(exit_dbref, Exits(thing))
-      notify(player, object_header(player, exit_dbref));
+      DOLIST (exit_dbref, Exits(thing))
+        notify(player, object_header(player, exit_dbref));
     } else
       notify(player, T("No exits."));
     /* print dropto if present */
@@ -1031,8 +1018,7 @@ do_inventory(dbref player)
       mush_panic("Unable to allocate memory in do_inventory");
     bp = arg;
     bp2 = arg2;
-    DOLIST(thing, Contents(player))
-    {
+    DOLIST (thing, Contents(player)) {
       if (bp != arg)
         safe_chr(' ', arg, &bp);
       safe_dbref(thing, arg, &bp);
@@ -1064,8 +1050,7 @@ do_inventory(dbref player)
     notify(player, T("You aren't carrying anything."));
   } else {
     notify(player, T("You are carrying:"));
-    DOLIST(thing, thing)
-    {
+    DOLIST (thing, thing) {
       notify(player, unparse_object_myopic(player, thing, AN_LOOK));
     }
   }
@@ -1400,8 +1385,9 @@ decompile_atrs(dbref player, dbref thing, const char *name, const char *pattern,
   dh.name = name;
   dh.skipdef = skipdef;
   /* Comment complaints if none are found */
-  if (!atr_iter_get(player, thing, pattern, 0, 0, decompile_helper, &dh))
+  if (!atr_iter_get(player, thing, pattern, AIG_NONE, decompile_helper, &dh)) {
     notify_format(player, T("@@ No attributes match '%s'. @@"), pattern);
+  }
 }
 
 /** Decompile locks on an object.

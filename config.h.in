@@ -43,8 +43,6 @@
 
 #undef HAVE_SYS_INOTIFY_H
 
-#undef HAVE_ZLIB_H
-
 #undef HAVE_BYTESWAP_H
 
 #undef HAVE_ENDIAN_H
@@ -65,6 +63,8 @@
 
 #undef HAVE_SYS_EVENTFD_H
 
+#undef HAVE_PTHREAD_H
+
 /* C99ish headers. The first two are really really nice to have. */
 
 #undef HAVE_STDINT_H
@@ -81,11 +81,7 @@
 
 #undef HAVE_POSTGRESQL
 
-#undef HAVE_SQLITE3
-
 #undef HAVE_SSL
-
-#undef HAVE_PCRE_H
 
 #undef HAVE_PCRE
 
@@ -101,6 +97,10 @@
 #undef HAVE_LIBEVENT_CORE
 
 #endif
+
+#undef HAVE_ICU
+
+#undef HAVE_LIBCURL
 
 /* Types */
 
@@ -181,6 +181,8 @@ typedef bool _Bool;
 #undef HAVE_GETRLIMIT
 
 #undef HAVE_GETRUSAGE
+
+#undef HAVE_GETSERVBYNAME
 
 #undef HAVE_GETTEXT
 
@@ -278,13 +280,7 @@ typedef bool _Bool;
 
 #undef HAVE_FCNTL
 
-#undef HAVE_INOTIFY_INIT
-
 #undef HAVE_INOTIFY_INIT1
-
-#ifdef HAVE_INOTIFY_INIT
-#define HAVE_INOTIFY
-#endif
 
 #undef HAVE_PREAD
 
@@ -303,6 +299,8 @@ typedef bool _Bool;
 #undef HAVE_DH_SET0_PQG
 
 #undef HAVE_EVP_MD_DO_ALL
+
+#undef HAVE_RAND_KEEP_RANDOM_DEVICES_OPEN
 
 #undef HAVE_PRCTL
 
@@ -327,6 +325,67 @@ typedef bool _Bool;
 #undef HAVE_PLEDGE
 
 #undef HAVE_PIPE2
+
+#undef HAVE_GETENTROPY
+
+#undef HAVE_ARC4RANDOM_BUF
+
+#undef HAVE_PTHREAD_ATFORK
+
+/* Bunch of sqlite3 stuff */
+
+#undef HAVE_FDATASYNC
+
+#undef HAVE_USLEEP
+
+#undef HAVE_FULLFSYNC
+
+#undef HAVE_LOCALTIME_R
+
+#undef HAVE_LOCALTIME_S
+
+#undef HAVE_GMTIME_R
+
+#undef HAVE_STRERROR_R
+
+#undef HAVE_DECL_STRERROR_R
+
+#undef HAVE_ISNAN
+
+#undef HAVE_MALLOC_USABLE_SIZE
+
+#undef STDC_HEADERS
+
+#undef HAVE_STDLIB_H
+
+#undef HAVE_STRING_H
+
+#undef HAVE_MEMORY_H
+
+#undef HAVE_STRINGS_H
+
+#define HAVE_SQLITE3
+#define SQLITE_THREADSAFE 2
+#define SQLITE_USE_URI 1
+#define SQLITE_ENABLE_FTS5 1
+#define SQLITE_ENABLE_JSON1 1
+#define SQLITE_ENABLE_RTREE 1
+#define SQLITE_ENABLE_STMTVTAB  1
+#define SQLITE_ENABLE_STAT4 1
+#define SQLITE_OMIT_DEPRECATED 1
+#define SQLITE_OMIT_DECLTYPE 1
+#define SQLITE_OMIT_LOAD_EXTENSION 1
+#define SQLITE_SOUNDEX 1
+#define SQLITE_DEFAULT_WAL_SYNCHRONOUS 1
+#define SQLITE_ENABLE_UPDATE_DELETE_LIMIT 1
+#ifdef HAVE_LIBZ
+#define SQLITE_HAVE_ZLIB 1
+#endif
+#ifdef HAVE_ICU
+#define SQLITE_ENABLE_ICU 1
+#endif
+#undef SQLITE_MAX_WORKER_THREADS
+#undef SQLITE_DEFAULT_WORKER_THREADS
 
 /* Variables and defines */
 
@@ -422,9 +481,7 @@ typedef bool _Bool;
 #define RESTRICT restrict
 
 #if defined(__MINGW32__) || defined(__MINGW64__)
-#include <w32api.h>
-#define _WIN32_WINNT Windows7
-#define WINVER Windows7
+#include "win32_vers.h"
 #endif
 
 #endif /* __CONFIG_H */ 

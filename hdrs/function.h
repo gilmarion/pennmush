@@ -105,12 +105,13 @@ FUN *builtin_func_hash_lookup(const char *name);
 int check_func(dbref player, FUN *fp);
 int restrict_function(const char *name, const char *restriction);
 int alias_function(dbref player, const char *function, const char *alias);
+int do_function_alias(dbref player, const char *function, const char *alias);
 void do_function_restrict(dbref player, const char *name,
                           const char *restriction, int builtin);
 void do_function_restore(dbref player, const char *name);
 void do_list_functions(dbref player, int lc, const char *type);
 char *list_functions(const char *);
-void do_function(dbref player, char *name, char **argv, int preserve);
+void do_function(dbref player, const char *name, char **argv, int preserve);
 void do_function_toggle(dbref player, char *name, int toggle);
 void do_function_report(dbref player, char *name);
 void do_function_delete(dbref player, char *name);
@@ -126,7 +127,7 @@ void function_init_postconfig(void);
 extern FUN *function_add(const char *name, function_func fun, int minargs,
                          int maxargs, int ftype);
 
-int cnf_add_function(char *name, char *opts);
+int cnf_add_function(const char *name, const char *opts);
 
 /** Default max number of arguments for a new @function */
 #define DEF_FUNCTION_ARGS 10

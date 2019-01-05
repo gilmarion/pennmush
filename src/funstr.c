@@ -13,6 +13,11 @@
 #include <limits.h>
 #include <locale.h>
 #include <stddef.h>
+
+#ifdef HAVE_LIBCURL
+#include <curl/curl.h>
+#endif
+
 #include "ansi.h"
 #include "attrib.h"
 #include "case.h"
@@ -30,6 +35,10 @@
 #include "pueblo.h"
 #include "sort.h"
 #include "strutil.h"
+#include "mushsql.h"
+#include "charconv.h"
+#include "mymalloc.h"
+#include "charclass.h"
 
 #ifdef WIN32
 #pragma warning(disable : 4761) /* NJG: disable warning re conversion */
@@ -148,8 +157,7 @@ FUNCTION(fun_isword)
 FUNCTION(fun_capstr)
 {
   char *p = args[0];
-  WALK_ANSI_STRING(p)
-  {
+  WALK_ANSI_STRING (p) {
     *p = UPCASE(*p);
     break;
   }
@@ -674,7 +682,7 @@ FUNCTION(fun_tr)
     charmap[i] = (char) i;
   }
 
-#define goodchr(x) (isprint(x) || (x == '\n'))
+#define goodchr(x) (char_isprint(x) || (x == '\n'))
   /* Convert ranges in input string, and check that
    * we don't receive a nonprinting char such as
    * beep() */
@@ -777,8 +785,7 @@ FUNCTION(fun_lcstr)
 {
   char *p;
   p = args[0];
-  WALK_ANSI_STRING(p)
-  {
+  WALK_ANSI_STRING (p) {
     *p = DOWNCASE(*p);
     p++;
   }
@@ -791,14 +798,41 @@ FUNCTION(fun_ucstr)
 {
   char *p;
   p = args[0];
-  WALK_ANSI_STRING(p)
-  {
+  WALK_ANSI_STRING (p) {
     *p = UPCASE(*p);
     p++;
   }
   safe_str(args[0], buff, bp);
   return;
 }
+
+#ifdef HAVE_ICU
+
+FUNCTION(fun_lcstr2)
+{
+  int llen;
+  char *low = latin1_to_lower(args[0], arglens[0], &llen, "string");
+  if (low) {
+    safe_strl(low, llen, buff, bp);
+    mush_free(low, "string");
+  } else {
+    safe_str("#-1 ENCODING ERROR", buff, bp);
+  }
+}
+
+FUNCTION(fun_ucstr2)
+{
+  int ulen;
+  char *up = latin1_to_upper(args[0], arglens[0], &ulen, "string");
+  if (up) {
+    safe_strl(up, ulen, buff, bp);
+    mush_free(up, "string");
+  } else {
+    safe_str("#-1 ENCODING ERROR", buff, bp);
+  }
+}
+
+#endif
 
 /* ARGSUSED */
 FUNCTION(fun_repeat)
@@ -1405,7 +1439,7 @@ FUNCTION(fun_ord)
 
   c = args[0][0];
 
-  if (isprint(c)) {
+  if (char_isprint(c)) {
     safe_integer(c, buff, bp);
   } else {
     safe_str(T("#-1 UNPRINTABLE CHARACTER"), buff, bp);
@@ -1423,7 +1457,7 @@ FUNCTION(fun_chr)
   c = parse_integer(args[0]);
   if (c < 0 || c > UCHAR_MAX)
     safe_str(T("#-1 THIS ISN'T UNICODE"), buff, bp);
-  else if (isprint(c))
+  else if (char_isprint(c))
     safe_chr(c, buff, bp);
   else
     safe_str(T("#-1 UNPRINTABLE CHARACTER"), buff, bp);
@@ -1441,11 +1475,42 @@ FUNCTION(fun_accent)
 FUNCTION(fun_stripaccents)
 {
   int n;
+
+  if (nargs == 2 && parse_boolean(args[1])) {
+    sqlite3 *sqldb;
+    sqlite3_stmt *converter;
+
+    sqldb = get_shared_db();
+    converter = prepare_statement(sqldb, "VALUES (spellfix1_translit(?))",
+                                  "utf8_to_ascii");
+    if (converter) {
+      int len;
+      int status;
+      char *utf8;
+
+      utf8 = latin1_to_utf8(args[0], arglens[0], &len, "string");
+      sqlite3_bind_text(converter, 1, utf8, len, free_string);
+      do {
+        status = sqlite3_step(converter);
+        if (status == SQLITE_ROW) {
+          const char *ascii = (const char *) sqlite3_column_text(converter, 0);
+          len = sqlite3_column_bytes(converter, 0);
+          safe_strl(ascii, len, buff, bp);
+          break;
+        }
+      } while (is_busy_status(status));
+      sqlite3_reset(converter);
+      return;
+    }
+  }
+
+  /* Old style */
   for (n = 0; n < arglens[0]; n++) {
-    if (accent_table[args[0][n]].base)
+    if (accent_table[args[0][n]].base) {
       safe_str(accent_table[args[0][n]].base, buff, bp);
-    else
+    } else {
       safe_chr(args[0][n], buff, bp);
+    }
   }
 }
 
@@ -1780,7 +1845,7 @@ align_one_line(char *buff, char **bp, int ncols, int cols[MAX_COLS],
         ptrs[i] = strchr(ptr, '\0');
       else
         ptrs[i] = ptr + 1;
-    } else if (lastspace) {
+    } else if (lastspace && !(calign[i] & (AL_TRUNC_ALL | AL_TRUNC_EACH))) {
       char *tptr;
 
       ptr = lastspace;
@@ -1791,16 +1856,7 @@ align_one_line(char *buff, char **bp, int ncols, int cols[MAX_COLS],
       if (len > 0) {
         safe_ansi_string(as[i], ptrs[i] - (as[i]->text), len, segment, &sp);
       }
-      if (calign[i] & AL_TRUNC_ALL)
-        ptrs[i] = strchr(ptr, '\0');
-      else if (calign[i] & AL_TRUNC_EACH) {
-        tptr = strchr(ptr, '\n');
-        if (tptr == NULL)
-          ptrs[i] = strchr(ptr, '\0');
-        else
-          ptrs[i] = tptr + 1;
-      } else
-        ptrs[i] = lastspace;
+      ptrs[i] = lastspace;
     } else {
       if (len > 0) {
         safe_ansi_string(as[i], ptrs[i] - (as[i]->text), len, segment, &sp);
@@ -2355,4 +2411,109 @@ FUNCTION(fun_render)
     safe_str(remove_markup(args[0], NULL), buff, bp);
   else
     safe_str(render_string(args[0], flags), buff, bp);
+}
+
+FUNCTION(fun_urlencode)
+{
+#ifdef HAVE_LIBCURL
+  char *escaped;
+  CURL *handle = curl_easy_init();
+  escaped = curl_easy_escape(handle, args[0], arglens[0]);
+  safe_str(escaped, buff, bp);
+  curl_free(escaped);
+  curl_easy_cleanup(handle);
+#else
+  safe_str(T("#-1 FUNCTION DISABLED"), buff, bp);
+#endif
+}
+
+FUNCTION(fun_urldecode)
+{
+#ifdef HAVE_LIBCURL
+  char *decoded;
+  int outlen;
+  int n;
+  CURL *handle = curl_easy_init();
+  decoded = curl_easy_unescape(handle, args[0], arglens[0], &outlen);
+
+  for (n = 0; n < outlen; n += 1) {
+    if (!isprint(decoded[n])) {
+      decoded[n] = '?';
+    }
+  }
+
+  safe_strl(decoded, outlen, buff, bp);
+  curl_free(decoded);
+  curl_easy_cleanup(handle);
+#else
+  safe_str(T("#-1 FUNCTION DISABLED"), buff, bp);
+#endif
+}
+
+FUNCTION(fun_formdecode)
+{
+#ifdef HAVE_LIBCURL
+  char *decoded;
+  char *cur, *ptr;
+  char pbuff[MAX_COMMAND_LEN];
+  char *osep;
+  char *x;
+  int plen;
+  int outlen;
+  int n;
+  int count;
+  CURL *handle = curl_easy_init();
+  bool list = false;
+
+  count = 0;
+  ptr = args[0];
+  cur = ptr;
+  plen = snprintf(pbuff, MAX_COMMAND_LEN, "%s=", args[1]);
+  if (nargs > 2) {
+    osep = args[2];
+  } else {
+    osep = " ";
+  }
+  if (nargs == 1 || (!args[1] || !*args[1])) {
+    list = true;
+  }
+  while (ptr && *ptr) {
+    cur = ptr;
+    ptr = strchr(ptr, '&');
+    if (ptr) {
+      *(ptr++) = '\0';
+    }
+    decoded = curl_easy_unescape(handle, cur, strlen(cur), &outlen);
+
+    for (n = 0; n < outlen; n += 1) {
+      if (!isprint(decoded[n])) {
+        decoded[n] = '?';
+      }
+    }
+
+    if (list) {
+      x = strchr(decoded, '=');
+      if (x) {
+        *x = '\0';
+      }
+      if (count) {
+        safe_str(osep, buff, bp);
+      }
+      safe_str(decoded, buff, bp);
+      count++;
+    } else {
+      if (!strncmp(decoded, pbuff, plen)) {
+        if (count) {
+          safe_str(osep, buff, bp);
+        }
+        safe_strl(decoded + plen, outlen - plen, buff, bp);
+        count++;
+      }
+    }
+    curl_free(decoded);
+  }
+  curl_easy_cleanup(handle);
+#else
+  safe_str(T("#-1 FUNCTION DISABLED"), buff, bp);
+#endif
 }

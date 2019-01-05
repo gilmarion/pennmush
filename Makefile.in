@@ -2,8 +2,8 @@
 
 # - System configuration - #
 
-VERSION=1.8.6
-PATCHLEVEL=2
+VERSION=1.8.7
+PATCHLEVEL=0
 
 #
 # This section of the file should be automatically configured by the
@@ -15,14 +15,14 @@ PATCHLEVEL=2
 # and (probably) remove -O
 #
 MAKE=@MAKE@
-CC=@CC@
+CC=@PTHREAD_CC@
 
-SQL_CFLAGS=@MYSQL_CFLAGS@ @POSTGRESQL_CPPFLAGS@ @SQLITE3_CFLAGS@
-SQL_LDFLAGS=@MYSQL_LDFLAGS@ @POSTGRESQL_LDFLAGS@ @SQLITE3_LDFLAGS@
+SQL_CFLAGS=@MYSQL_CFLAGS@ @POSTGRESQL_CPPFLAGS@
+SQL_LDFLAGS=@MYSQL_LDFLAGS@ @POSTGRESQL_LDFLAGS@
 
-CCFLAGS=@CFLAGS@ -I.. -I../hdrs -include ../config.h -include ../confmagic.h -include ../options.h -funsigned-char @CPPFLAGS@ @PCRE_CFLAGS@ @OPENSSL_INCLUDES@
-LDFLAGS=@LDFLAGS@  @OPENSSL_LDFLAGS@
-CLIBS=@LIBS@ @PCRE_LIBS@ @OPENSSL_LIBS@ @POSTGRESQL_LIBS@
+CCFLAGS=@CFLAGS@ -I.. -I../hdrs -include ../config.h -include ../confmagic.h -include ../options.h @PTHREAD_CFLAGS@ @CPPFLAGS@ @ICU_CPPFLAGS@ @OPENSSL_INCLUDES@ @CURL_CFLAGS@
+LDFLAGS=@LDFLAGS@  @OPENSSL_LDFLAGS@ 
+CLIBS=@PTHREAD_LIBS@ @LIBS@ @ICU_LIBS@ @OPENSSL_LIBS@ @POSTGRESQL_LIBS@ @CURL_LIBS@
 INSTALL=@INSTALL@
 INSTALLDIR=$installdir
 CP=@CP@
@@ -34,7 +34,14 @@ SHELL=/bin/sh
 # Where to install with 'make globalinstall'
 GLOBAL_INSTALL=@libexecdir@
 
+PCRE2_DIR=pcre2-10.32
+
+
 all: config.h autogen game/mush.cnf
+	@if [ ! -d pcre2 ]; then \
+		echo "Making all in pcre2"; \
+		(cd $(PCRE2_DIR) && make install); \
+	fi
 	@echo "Making all in src."
 	(cd src; @MAKE@ all "CC=$(CC)" "CCFLAGS=$(CCFLAGS)" \
 	"LDFLAGS=$(LDFLAGS)" "CLIBS=$(CLIBS)" "MAKE=$(MAKE)" \
@@ -49,9 +56,9 @@ config.h: configure
 	@echo "to suppress this message and continue compiling."
 	@exit 1
 
-autogen: hdrs/cmds.h hdrs/funs.h hdrs/switches.h hdrs/gitinfo.h
+autogen: hdrs/cmds.h hdrs/funs.h hdrs/switches.h hdrs/gitinfo.h src/tests.inc
 
-hdrs/cmds.h: src/cmds.c src/command.c src/cque.c src/help.c src/set.c src/sql.c Patchlevel
+hdrs/cmds.h: src/cmds.c src/command.c src/cque.c src/extchat.c src/help.c src/set.c src/sql.c Patchlevel
 	@PERL@ utils/mkcmds.pl commands
 
 hdrs/switches.h: src/SWITCHES Patchlevel
@@ -60,8 +67,11 @@ hdrs/switches.h: src/SWITCHES Patchlevel
 src/switchinc.c: src/SWITCHES Patchlevel
 	@PERL@ utils/mkcmds.pl switches
 
-hdrs/funs.h: src/fun*.c src/bsd.c src/conf.c src/extmail.c src/help.c src/markup.c src/wiz.c src/sql.c Patchlevel src/cque.c
+hdrs/funs.h: src/fun*.c src/bsd.c src/conf.c src/connlog.c src/extmail.c src/help.c src/markup.c src/wiz.c src/sql.c Patchlevel src/cque.c
 	@PERL@ utils/mkcmds.pl functions
+
+src/tests.inc: src/*.c
+	@PERL@ utils/mkcmds.pl tests
 
 hdrs/gitinfo.h: $(wildcard .git/HEAD .git/index)
 	@if [ -f ".git/HEAD" ]; then \
@@ -73,7 +83,7 @@ install: localized all
 	@if [ -f game/netmush ]; then rm -f game/netmush; fi	
 	@if [ -f game/info_slave ]; then rm -f game/info_slave; fi	
 	@if [ -f game/ssl_slave ]; then rm -f game/ssl_slave; fi	
-	(cd game; $(INSTALL_LINKS))
+	-(cd game; $(INSTALL_LINKS))
 	(cd game/txt; @MAKE@)
 	@echo "If you plan to run multiple MUSHes, consider running 'make customize'"
 
@@ -167,6 +177,8 @@ test: netmud
 	(cd test; sh alltests.sh)
 
 clean:
+	(cd $(PCRE2_DIR); @MAKE@ clean)
+	rm -rf pcre2/
 	(cd src; @MAKE@ clean)
 	(cd game; rm -f netmush info_slave)
 

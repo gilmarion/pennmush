@@ -18,8 +18,10 @@ void *mush_realloc_where(void *restrict ptr, size_t newsize,
                          const char *restrict check,
                          const char *restrict filename, int line);
 #define mush_free(ptr, tag) mush_free_where((ptr), (tag), __FILE__, __LINE__)
-void mush_free_where(const void *restrict ptr, const char *restrict check,
+void mush_free_where(void *restrict ptr, const char *restrict check,
                      const char *restrict filename, int line);
+
+int mush_getpagesize(void);
 
 typedef struct slab slab;
 slab *slab_create(const char *name, size_t item_size);
